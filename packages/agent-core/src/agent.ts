@@ -691,7 +691,16 @@ export class Agent {
 
     const signal = this.activeRun?.abortController.signal;
     if (!signal) {
-      throw new Error("Agent listener invoked outside active run");
+      // Discard stale events instead of crashing the process. #62342 fixed the
+      // specific exec-update race that caused this at the call-site
+      // (updatesDisabled/disableUpdates), but that's a prevention layer above
+      // this code, not a change here — any other stale-event path still hits
+      // this throw. Warn-and-return is a defensive fallback so an unrelated
+      // race here can never take down the whole gateway process.
+      console.warn(
+        `Agent listener invoked outside active run, ignoring stale event: ${event.type}`,
+      );
+      return;
     }
     for (const listener of this.listeners) {
       await listener(event, signal);
