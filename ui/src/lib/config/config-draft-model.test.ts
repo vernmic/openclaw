@@ -520,6 +520,62 @@ describe("config draft model", () => {
     runtimeConfig.dispose();
   });
 
+  it("stages the roster default without a legacy marker under explicit ownership", async () => {
+    // Regression: the marker was written unconditionally, so on an
+    // ownership="explicit" roster every save was refused with
+    // "agents.ownership=explicit cannot be combined with a legacy
+    // default=true marker" and the draft could never be persisted.
+    const config = {
+      agents: {
+        ownership: "explicit",
+        entries: { main: {}, research: { default: true } },
+      },
+    };
+    const request = vi.fn(async (method: string) => {
+      if (method === "config.get") {
+        return { config, raw: JSON.stringify(config), hash: "hash-1", valid: true, issues: [] };
+      }
+      return {};
+    });
+    const { runtimeConfig } = createConfigCapabilityHarness(
+      request as GatewayBrowserClient["request"],
+    );
+    await runtimeConfig.ensureLoaded();
+
+    expect(runtimeConfig.stageDefaultAgent("main")).toBe(true);
+
+    const form = runtimeConfig.state.configForm as Record<string, any>;
+    expect(form.agents.entries.main.default).toBeUndefined();
+    // The stale marker on the other entry is cleared, not left to re-break it.
+    expect(form.agents.entries.research.default).toBeUndefined();
+    expect(form.agents.defaults.systemAgent.agentId).toBe("main");
+    expect(form.talk.agentId).toBe("main");
+    runtimeConfig.dispose();
+  });
+
+  it("still writes the legacy marker on a roster without explicit ownership", async () => {
+    const config = { agents: { entries: { main: {}, research: { default: true } } } };
+    const request = vi.fn(async (method: string) => {
+      if (method === "config.get") {
+        return { config, raw: JSON.stringify(config), hash: "hash-1", valid: true, issues: [] };
+      }
+      return {};
+    });
+    const { runtimeConfig } = createConfigCapabilityHarness(
+      request as GatewayBrowserClient["request"],
+    );
+    await runtimeConfig.ensureLoaded();
+
+    expect(runtimeConfig.stageDefaultAgent("main")).toBe(true);
+
+    const form = runtimeConfig.state.configForm as Record<string, any>;
+    expect(form.agents.entries.main.default).toBe(true);
+    expect(form.agents.entries.research.default).toBeUndefined();
+    expect(form.agents.defaults).toBeUndefined();
+    expect(form.talk).toBeUndefined();
+    runtimeConfig.dispose();
+  });
+
   it("preserves machine-indexed validation paths for raw-editor submissions", async () => {
     const issue = { path: "models.3.name", message: "Invalid model name" };
     const config = {

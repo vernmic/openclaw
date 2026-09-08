@@ -595,29 +595,56 @@ export function removeConfigFormValue(state: RuntimeConfigState, path: Array<str
   mutateConfigForm(state, (draft) => removePathValue(draft, path));
 }
 
+/**
+ * Marks one agent as the roster default.
+ *
+ * Two roster shapes exist and they disagree about how that is spelled. A
+ * legacy roster carries a `default: true` marker on the entry itself. A roster
+ * with `agents.ownership="explicit"` has RETIRED that marker, and the config
+ * schema refuses any roster carrying both — so writing it there stages a draft
+ * the gateway can never accept, and the save fails with INVALID_REQUEST every
+ * time. Under explicit ownership, name the role owners the marker used to
+ * imply instead, mirroring the server-side `materializeLegacyDefaultAgentRoles`
+ * migration.
+ */
 export function stageDefaultAgentConfigEntry(state: RuntimeConfigState, agentId: string): boolean {
   const source = state.configForm ?? resolveEditableSnapshotConfig(state.configSnapshot);
   const target = resolveAgentConfigEntryTarget(source, agentId);
   if (!target) {
     return false;
   }
-  const authoredAgentId = target.path[2];
+  const authoredAgentId = String(target.path[2]);
   mutateConfigForm(state, (draft) => {
     const agents = isRecord(draft.agents) ? draft.agents : null;
     const entries = isRecord(agents?.entries) ? agents.entries : null;
-    if (!entries) {
+    if (!agents || !entries) {
       return;
     }
+    const explicitOwnership = agents.ownership === "explicit";
     for (const [id, entry] of Object.entries(entries)) {
       if (!isRecord(entry)) {
         continue;
       }
-      if (id === authoredAgentId) {
+      if (id === authoredAgentId && !explicitOwnership) {
         entry.default = true;
       } else {
+        // Clearing stale markers is what makes the explicit path self-healing:
+        // a roster that still carries one is already invalid, and this is the
+        // action whose whole purpose is to restate which agent owns the role.
         delete entry.default;
       }
     }
+    if (!explicitOwnership) {
+      return;
+    }
+    const defaults = isRecord(agents.defaults) ? agents.defaults : {};
+    const systemAgent = isRecord(defaults.systemAgent) ? defaults.systemAgent : {};
+    agents.defaults = {
+      ...defaults,
+      systemAgent: { ...systemAgent, agentId: authoredAgentId },
+    };
+    const talk = isRecord(draft.talk) ? draft.talk : {};
+    draft.talk = { ...talk, agentId: authoredAgentId };
   });
   return true;
 }
