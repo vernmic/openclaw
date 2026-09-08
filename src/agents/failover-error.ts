@@ -451,6 +451,40 @@ function hasSessionTranscriptWriterClaimRebound(
   );
 }
 
+/**
+ * True when the error graph contains a transcript-projection-unavailable
+ * failure.
+ *
+ * Name-based like the writer-rebound probe above: the error crosses module
+ * boundaries inside aggregates, so `instanceof` is not reliable here.
+ */
+function hasSessionTranscriptProjectionUnavailable(
+  err: unknown,
+  seen: Set<object> = new Set(),
+): boolean {
+  if (
+    err &&
+    typeof err === "object" &&
+    readErrorName(err) === "SessionTranscriptProjectionUnavailableError"
+  ) {
+    return true;
+  }
+  if (!err || typeof err !== "object") {
+    return false;
+  }
+  if (seen.has(err)) {
+    return false;
+  }
+  seen.add(err);
+  // SAFETY: err is a non-null object here; each field read stays optional and unknown.
+  const candidate = err as { error?: unknown; cause?: unknown; reason?: unknown };
+  return (
+    hasSessionTranscriptProjectionUnavailable(candidate.error, seen) ||
+    hasSessionTranscriptProjectionUnavailable(candidate.cause, seen) ||
+    hasSessionTranscriptProjectionUnavailable(candidate.reason, seen)
+  );
+}
+
 function readField(value: unknown, key: string): unknown {
   if (!value || typeof value !== "object") {
     return undefined;
@@ -932,6 +966,15 @@ export function resolveModelFallbackError(
   // The in-transaction transcript fence owns writer supersession. A rebound is
   // local coordination failure even when provider-looking wrappers contain it.
   if (hasSessionTranscriptWriterClaimRebound(err)) {
+    return { kind: "coordination", error: err };
+  }
+  // A rebuilding transcript projection is session state, not a model verdict.
+  // Every candidate in the chain fails identically while the rebuild is in
+  // flight, so walking the chain burns the whole fallback list in seconds and
+  // reports "All models failed" for a condition no model change can fix.
+  // Classifying it as coordination rethrows immediately and leaves the retry
+  // to callers that already back off and wait for the rebuild.
+  if (hasSessionTranscriptProjectionUnavailable(err)) {
     return { kind: "coordination", error: err };
   }
   const failoverError = coerceToFailoverError(err, context);
