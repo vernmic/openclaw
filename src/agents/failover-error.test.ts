@@ -907,6 +907,26 @@ describe("failover-error", () => {
       }
     });
 
+    it("returns true for direct and nested transcript projection rebuilds", () => {
+      // Regression: a rebuilding projection was classified "unknown", so the
+      // fallback loop treated session state as a model verdict and exhausted
+      // every candidate (observed 2026-09-07: 6 candidates burned in 16s, all
+      // failing with the identical non-model error).
+      const projection = new Error("Session transcript projection is rebuilding: sess-1");
+      projection.name = "SessionTranscriptProjectionUnavailableError";
+      for (const error of [
+        projection,
+        new Error("worker turn failed", { cause: projection }),
+        { error: { reason: projection } },
+      ]) {
+        expect(isNonProviderRuntimeCoordinationError(error)).toBe(true);
+        expect(resolveModelFallbackError(error)).toEqual({
+          kind: "coordination",
+          error,
+        });
+      }
+    });
+
     it("returns true for Codex missing tool-result local execution failures", () => {
       const missingToolResultMessage =
         "OpenClaw recorded a native Codex tool.call without a matching tool.result before the turn completed.";
