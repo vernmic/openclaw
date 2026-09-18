@@ -204,6 +204,7 @@ export async function runGatewayLoop(params: {
   let activeRestartRequest: GatewayRunSignalRequest | null = null;
   let committedGenericSuccessor: ChildProcess | true | null = null;
   let forceActiveRestartExit: (() => void) | null = null;
+  let forceActiveStopExit: (() => void) | null = null;
   let pendingStartupForceExitTimer: ReturnType<typeof setTimeout> | null = null;
   let restartDrainingMarked = false;
   let startupFailedWithoutServerHandle = false;
@@ -674,12 +675,12 @@ export async function runGatewayLoop(params: {
     }
     let forceExitTimer: ReturnType<typeof setTimeout> | null = null;
     let hardExitWatchdog: ShutdownHardExitWatchdog | null = null;
-    const armForceExitTimer = (forceExitMs: number) => {
+    const armForceExitTimer = (forceExitMs: number, why = "shutdown timed out") => {
       if (forceExitTimer) {
         return;
       }
       forceExitTimer = setTimeout(() => {
-        gatewayLog.error("shutdown timed out; exiting without full cleanup");
+        gatewayLog.error(`${why}; exiting without full cleanup`);
         void forceExitAfterStabilityBundle(
           isRestart ? "gateway.restart_shutdown_timeout" : "gateway.stop_shutdown_timeout",
         );
@@ -707,6 +708,16 @@ export async function runGatewayLoop(params: {
         if (!getManagedUpdateOwner()) {
           armForceExitTimer(SHUTDOWN_TIMEOUT_MS);
         }
+      };
+    } else if (acceptedRequest.signal === "SIGINT") {
+      // A second interactive SIGINT during an interactive stop means "now":
+      // collapse the shutdown budget to zero and take the same forced-exit path
+      // the timeout would have taken, instead of logging "ignoring" and holding
+      // the operator for the full SHUTDOWN_TIMEOUT_MS. Supervisor (SIGTERM)
+      // stops keep their budget.
+      forceActiveStopExit = () => {
+        clearForceExitTimer();
+        armForceExitTimer(0, "stop forced by repeated signal");
       };
     }
 
@@ -825,6 +836,32 @@ export async function runGatewayLoop(params: {
             ],
           );
         } else {
+          // An interactive SIGINT stop is an operator at the keyboard asking for
+          // the process to go away. Abort active embedded runs first (mode "all":
+          // a desk turn mid-tool is not "compacting", so the restart drain's
+          // targeted abort would leave it running) so the drain below settles in
+          // seconds instead of the run continuing to call models and start tools
+          // for the whole shutdown budget. A SIGTERM stop keeps the supervisor
+          // contract above and lets the turn settle on its own.
+          if (acceptedRequest.signal === "SIGINT") {
+            try {
+              const activeRuns =
+                eagerLifecycleRuntime.createGatewayActiveWorkSnapshot().counts.embeddedRuns;
+              if (activeRuns > 0) {
+                gatewayLog.info(
+                  `aborting ${activeRuns} active embedded run(s) for interactive stop`,
+                );
+                eagerLifecycleRuntime.abortEmbeddedAgentRun(undefined, {
+                  mode: "all",
+                  reason: "restart",
+                });
+              }
+            } catch (err) {
+              gatewayLog.warn(
+                `failed to abort active embedded runs for stop; draining instead: ${formatErrorMessage(err)}`,
+              );
+            }
+          }
           // Keep all process-owned work alive without spending the shutdown reserve
           // that server teardown and the supervisor watchdog need.
           try {
@@ -930,6 +967,7 @@ export async function runGatewayLoop(params: {
         } else {
           await hostLifecycle?.retire();
           clearForceExitTimer();
+          forceActiveStopExit = null;
           if (isRestart && shutdownFailed) {
             await forceExitAfterStabilityBundle("gateway.restart_close_failed");
           } else {
@@ -1026,6 +1064,11 @@ export async function runGatewayLoop(params: {
         clearPendingStartupForceExitTimer();
         startupFailedWithoutServerHandle = false;
         runAcceptedRequest(acceptedRequest);
+        return;
+      }
+      if (action === "stop" && signal === "SIGINT" && forceActiveStopExit) {
+        gatewayLog.warn(`received ${signal} during shutdown; forcing exit`);
+        forceActiveStopExit();
         return;
       }
       gatewayLog.info(`received ${signal} during shutdown; ignoring`);

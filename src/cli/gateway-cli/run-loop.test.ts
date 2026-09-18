@@ -1595,6 +1595,105 @@ describe("runGatewayLoop", () => {
     });
   });
 
+  it("aborts active embedded runs before draining on an interactive SIGINT stop", async () => {
+    vi.clearAllMocks();
+
+    await withIsolatedSignals(async ({ captureSignal }) => {
+      const activeSnapshot = createActiveWorkSnapshot({ embeddedRuns: 1 }, [
+        { kind: "embedded-run", count: 1, message: "1 active embedded run(s)" },
+      ]);
+      createGatewayActiveWorkSnapshot.mockReturnValueOnce(activeSnapshot);
+      waitForGatewayActiveWork.mockResolvedValueOnce({
+        drained: true,
+        snapshot: idleActiveWorkSnapshot,
+      });
+      const { close, runtime, exited } = await createSignaledLoopHarness();
+
+      captureSignal("SIGINT")();
+
+      await expect(exited).resolves.toBe(0);
+      expect(abortEmbeddedAgentRun).toHaveBeenCalledWith(undefined, {
+        mode: "all",
+        reason: "restart",
+      });
+      expect(gatewayLog.info).toHaveBeenCalledWith(
+        "aborting 1 active embedded run(s) for interactive stop",
+      );
+      expect(waitForGatewayActiveWork).toHaveBeenCalledWith(315_000, undefined);
+      expect(close).toHaveBeenCalledWith({
+        reason: "gateway stopping",
+        restartExpectedMs: null,
+      });
+      expect(runtime.exit).toHaveBeenCalledWith(0);
+    });
+  });
+
+  it("lets active embedded runs settle on a SIGTERM stop", async () => {
+    vi.clearAllMocks();
+
+    await withIsolatedSignals(async ({ captureSignal }) => {
+      const activeSnapshot = createActiveWorkSnapshot({ embeddedRuns: 1 }, [
+        { kind: "embedded-run", count: 1, message: "1 active embedded run(s)" },
+      ]);
+      createGatewayActiveWorkSnapshot.mockReturnValueOnce(activeSnapshot);
+      waitForGatewayActiveWork.mockResolvedValueOnce({
+        drained: true,
+        snapshot: idleActiveWorkSnapshot,
+      });
+      const { runtime, exited } = await createSignaledLoopHarness();
+
+      captureSignal("SIGTERM")();
+
+      await expect(exited).resolves.toBe(0);
+      expect(abortEmbeddedAgentRun).not.toHaveBeenCalled();
+      expect(runtime.exit).toHaveBeenCalledWith(0);
+    });
+  });
+
+  it("forces exit on a second SIGINT during an interactive stop", async () => {
+    vi.clearAllMocks();
+
+    await withIsolatedSignals(async ({ captureSignal }) => {
+      let releaseDrain: (() => void) | undefined;
+      const pendingDrain = new Promise<void>((resolve) => {
+        releaseDrain = resolve;
+      });
+      waitForGatewayActiveWork.mockImplementationOnce(async () => {
+        await pendingDrain;
+        return { drained: true, snapshot: idleActiveWorkSnapshot };
+      });
+      const { close, runtime, exited } = await createSignaledLoopHarness();
+
+      try {
+        const sigint = captureSignal("SIGINT");
+        sigint();
+        await waitForLoopCondition(
+          () => waitForGatewayActiveWork.mock.calls.length === 1,
+          "expected the first SIGINT to begin the active-work drain",
+        );
+        expect(runtime.exit).not.toHaveBeenCalled();
+
+        sigint();
+
+        await expect(exited).resolves.toBe(1);
+        expect(gatewayLog.warn).toHaveBeenCalledWith(
+          "received SIGINT during shutdown; forcing exit",
+        );
+        expect(gatewayLog.error).toHaveBeenCalledWith(
+          "stop forced by repeated signal; exiting without full cleanup",
+        );
+        expect(gatewayLog.info).not.toHaveBeenCalledWith(
+          "received SIGINT during shutdown; ignoring",
+        );
+        expect(close).not.toHaveBeenCalled();
+        expect(runtime.exit).toHaveBeenCalledWith(1);
+      } finally {
+        releaseDrain?.();
+        await exited;
+      }
+    });
+  });
+
   it("bounds the file-log flush before a graceful SIGTERM exit", async () => {
     vi.clearAllMocks();
 
