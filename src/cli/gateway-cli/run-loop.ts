@@ -659,6 +659,22 @@ export async function runGatewayLoop(params: {
     }
   };
 
+  // Abort every active embedded run so it finalizes its transcript and the
+  // stop drain can settle. Returns how many runs were active; never throws.
+  const abortActiveEmbeddedRunsForStop = (): number => {
+    try {
+      const activeRuns =
+        eagerLifecycleRuntime.createGatewayActiveWorkSnapshot().counts.embeddedRuns;
+      if (activeRuns > 0) {
+        eagerLifecycleRuntime.abortEmbeddedAgentRun(undefined, { mode: "all", reason: "restart" });
+      }
+      return activeRuns;
+    } catch (err) {
+      gatewayLog.warn(`failed to abort active embedded runs for stop: ${formatErrorMessage(err)}`);
+      return 0;
+    }
+  };
+
   const runAcceptedRequest = (acceptedRequest: GatewayRunSignalRequest) => {
     const { action, restartIntent } = acceptedRequest;
     const isRestart = action !== "stop";
@@ -710,12 +726,28 @@ export async function runGatewayLoop(params: {
         }
       };
     } else if (acceptedRequest.signal === "SIGINT") {
-      // A second interactive SIGINT during an interactive stop means "now":
-      // collapse the shutdown budget to zero and take the same forced-exit path
-      // the timeout would have taken, instead of logging "ignoring" and holding
-      // the operator for the full SHUTDOWN_TIMEOUT_MS. Supervisor (SIGTERM)
-      // stops keep their budget.
+      // Graduated interactive stop. The first SIGINT is graceful (active turns
+      // settle within the shutdown budget, exactly as a supervisor stop). Each
+      // further SIGINT escalates instead of being logged as "ignoring":
+      //   2nd - abort the active embedded runs (mode "all": a desk turn mid-tool
+      //         is not "compacting") so they finalize and the drain settles in
+      //         seconds;
+      //   3rd - collapse the force-exit timer to zero and take the timeout path.
+      let escalation = 0;
       forceActiveStopExit = () => {
+        escalation += 1;
+        if (escalation === 1) {
+          const aborted = abortActiveEmbeddedRunsForStop();
+          if (aborted > 0) {
+            gatewayLog.warn(
+              `received SIGINT during shutdown; aborting ${aborted} active embedded run(s) (SIGINT again to force exit)`,
+            );
+            return;
+          }
+          // Nothing to abort: the operator is waiting on server close, not on a
+          // turn - fall through to the forced exit.
+        }
+        gatewayLog.warn("received SIGINT during shutdown; forcing exit");
         clearForceExitTimer();
         armForceExitTimer(0, "stop forced by repeated signal");
       };
@@ -836,30 +868,20 @@ export async function runGatewayLoop(params: {
             ],
           );
         } else {
-          // An interactive SIGINT stop is an operator at the keyboard asking for
-          // the process to go away. Abort active embedded runs first (mode "all":
-          // a desk turn mid-tool is not "compacting", so the restart drain's
-          // targeted abort would leave it running) so the drain below settles in
-          // seconds instead of the run continuing to call models and start tools
-          // for the whole shutdown budget. A SIGTERM stop keeps the supervisor
-          // contract above and lets the turn settle on its own.
+          // An interactive stop lets active turns settle like a supervisor stop
+          // does, but tells the operator what it is waiting on and how to
+          // escalate (see the graduated SIGINT handling above).
           if (acceptedRequest.signal === "SIGINT") {
             try {
               const activeRuns =
                 eagerLifecycleRuntime.createGatewayActiveWorkSnapshot().counts.embeddedRuns;
               if (activeRuns > 0) {
                 gatewayLog.info(
-                  `aborting ${activeRuns} active embedded run(s) for interactive stop`,
+                  `${activeRuns} active embedded run(s) settling before stop (SIGINT again to abort them)`,
                 );
-                eagerLifecycleRuntime.abortEmbeddedAgentRun(undefined, {
-                  mode: "all",
-                  reason: "restart",
-                });
               }
-            } catch (err) {
-              gatewayLog.warn(
-                `failed to abort active embedded runs for stop; draining instead: ${formatErrorMessage(err)}`,
-              );
+            } catch {
+              /* the drain below reports its own snapshot */
             }
           }
           // Keep all process-owned work alive without spending the shutdown reserve
@@ -1067,7 +1089,6 @@ export async function runGatewayLoop(params: {
         return;
       }
       if (action === "stop" && signal === "SIGINT" && forceActiveStopExit) {
-        gatewayLog.warn(`received ${signal} during shutdown; forcing exit`);
         forceActiveStopExit();
         return;
       }

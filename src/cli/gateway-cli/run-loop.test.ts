@@ -1595,7 +1595,7 @@ describe("runGatewayLoop", () => {
     });
   });
 
-  it("aborts active embedded runs before draining on an interactive SIGINT stop", async () => {
+  it("lets active embedded runs settle on the first interactive SIGINT stop", async () => {
     vi.clearAllMocks();
 
     await withIsolatedSignals(async ({ captureSignal }) => {
@@ -1612,12 +1612,9 @@ describe("runGatewayLoop", () => {
       captureSignal("SIGINT")();
 
       await expect(exited).resolves.toBe(0);
-      expect(abortEmbeddedAgentRun).toHaveBeenCalledWith(undefined, {
-        mode: "all",
-        reason: "restart",
-      });
+      expect(abortEmbeddedAgentRun).not.toHaveBeenCalled();
       expect(gatewayLog.info).toHaveBeenCalledWith(
-        "aborting 1 active embedded run(s) for interactive stop",
+        "1 active embedded run(s) settling before stop (SIGINT again to abort them)",
       );
       expect(waitForGatewayActiveWork).toHaveBeenCalledWith(315_000, undefined);
       expect(close).toHaveBeenCalledWith({
@@ -1650,7 +1647,112 @@ describe("runGatewayLoop", () => {
     });
   });
 
-  it("forces exit on a second SIGINT during an interactive stop", async () => {
+  it("aborts active embedded runs on the second interactive SIGINT and still closes cleanly", async () => {
+    vi.clearAllMocks();
+
+    await withIsolatedSignals(async ({ captureSignal }) => {
+      const activeSnapshot = createActiveWorkSnapshot({ embeddedRuns: 2 }, [
+        { kind: "embedded-run", count: 2, message: "2 active embedded run(s)" },
+      ]);
+      createGatewayActiveWorkSnapshot.mockReturnValue(activeSnapshot);
+      let releaseDrain: (() => void) | undefined;
+      const pendingDrain = new Promise<void>((resolve) => {
+        releaseDrain = resolve;
+      });
+      waitForGatewayActiveWork.mockImplementationOnce(async () => {
+        await pendingDrain;
+        return { drained: true, snapshot: idleActiveWorkSnapshot };
+      });
+      abortEmbeddedAgentRun.mockImplementationOnce(() => {
+        // The aborted runs settle: the drain completes on its own.
+        releaseDrain?.();
+        return true;
+      });
+      const { close, runtime, exited } = await createSignaledLoopHarness();
+
+      try {
+        const sigint = captureSignal("SIGINT");
+        sigint();
+        await waitForLoopCondition(
+          () => waitForGatewayActiveWork.mock.calls.length === 1,
+          "expected the first SIGINT to begin the active-work drain",
+        );
+        expect(abortEmbeddedAgentRun).not.toHaveBeenCalled();
+
+        sigint();
+
+        await expect(exited).resolves.toBe(0);
+        expect(abortEmbeddedAgentRun).toHaveBeenCalledWith(undefined, {
+          mode: "all",
+          reason: "restart",
+        });
+        expect(gatewayLog.warn).toHaveBeenCalledWith(
+          "received SIGINT during shutdown; aborting 2 active embedded run(s) (SIGINT again to force exit)",
+        );
+        expect(gatewayLog.info).not.toHaveBeenCalledWith(
+          "received SIGINT during shutdown; ignoring",
+        );
+        expect(close).toHaveBeenCalledWith({
+          reason: "gateway stopping",
+          restartExpectedMs: null,
+        });
+        expect(runtime.exit).toHaveBeenCalledWith(0);
+      } finally {
+        releaseDrain?.();
+        await exited;
+      }
+    });
+  });
+
+  it("forces exit on the third interactive SIGINT while runs are still draining", async () => {
+    vi.clearAllMocks();
+
+    await withIsolatedSignals(async ({ captureSignal }) => {
+      const activeSnapshot = createActiveWorkSnapshot({ embeddedRuns: 1 }, [
+        { kind: "embedded-run", count: 1, message: "1 active embedded run(s)" },
+      ]);
+      createGatewayActiveWorkSnapshot.mockReturnValue(activeSnapshot);
+      let releaseDrain: (() => void) | undefined;
+      const pendingDrain = new Promise<void>((resolve) => {
+        releaseDrain = resolve;
+      });
+      waitForGatewayActiveWork.mockImplementationOnce(async () => {
+        await pendingDrain;
+        return { drained: true, snapshot: idleActiveWorkSnapshot };
+      });
+      const { close, runtime, exited } = await createSignaledLoopHarness();
+
+      try {
+        const sigint = captureSignal("SIGINT");
+        sigint();
+        await waitForLoopCondition(
+          () => waitForGatewayActiveWork.mock.calls.length === 1,
+          "expected the first SIGINT to begin the active-work drain",
+        );
+
+        sigint(); // abort the runs (the mock never settles them)
+        expect(abortEmbeddedAgentRun).toHaveBeenCalledTimes(1);
+        expect(runtime.exit).not.toHaveBeenCalled();
+
+        sigint(); // force
+
+        await expect(exited).resolves.toBe(1);
+        expect(gatewayLog.warn).toHaveBeenCalledWith(
+          "received SIGINT during shutdown; forcing exit",
+        );
+        expect(gatewayLog.error).toHaveBeenCalledWith(
+          "stop forced by repeated signal; exiting without full cleanup",
+        );
+        expect(close).not.toHaveBeenCalled();
+        expect(runtime.exit).toHaveBeenCalledWith(1);
+      } finally {
+        releaseDrain?.();
+        await exited;
+      }
+    });
+  });
+
+  it("forces exit on the second interactive SIGINT when nothing is left to abort", async () => {
     vi.clearAllMocks();
 
     await withIsolatedSignals(async ({ captureSignal }) => {
@@ -1671,19 +1773,13 @@ describe("runGatewayLoop", () => {
           () => waitForGatewayActiveWork.mock.calls.length === 1,
           "expected the first SIGINT to begin the active-work drain",
         );
-        expect(runtime.exit).not.toHaveBeenCalled();
 
         sigint();
 
         await expect(exited).resolves.toBe(1);
+        expect(abortEmbeddedAgentRun).not.toHaveBeenCalled();
         expect(gatewayLog.warn).toHaveBeenCalledWith(
           "received SIGINT during shutdown; forcing exit",
-        );
-        expect(gatewayLog.error).toHaveBeenCalledWith(
-          "stop forced by repeated signal; exiting without full cleanup",
-        );
-        expect(gatewayLog.info).not.toHaveBeenCalledWith(
-          "received SIGINT during shutdown; ignoring",
         );
         expect(close).not.toHaveBeenCalled();
         expect(runtime.exit).toHaveBeenCalledWith(1);
