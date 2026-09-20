@@ -697,6 +697,25 @@ function resolvePinnedDispatcherLookup(
   });
 }
 
+/**
+ * 15 s TCP keep-alive probes for Z.AI endpoints (Vern, 2026-09-19).
+ *
+ * The upstream edge resets a stream that sits silent while the model prefills or thinks; a
+ * client can only supply transport-level keep-alives (SSE comments flow server -> client), so
+ * sockets to *.z.ai get a probe every 15 s while a call is in flight. Scoped at this funnel on
+ * purpose: the pinned hostname is in hand here, which is what "the endpoint has zai in it" means.
+ */
+function withZaiKeepAliveConnect(
+  hostname: string,
+  connect: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  const host = normalizeHostname(hostname);
+  if (host !== "api.z.ai" && !host.endsWith(".z.ai")) {
+    return connect;
+  }
+  return { ...(connect ?? {}), keepAlive: true, keepAliveInitialDelay: 15_000 };
+}
+
 export function createPinnedDispatcher(
   pinned: PinnedHostname,
   policy?: PinnedDispatcherPolicy,
@@ -706,7 +725,15 @@ export function createPinnedDispatcher(
   const lookup = resolvePinnedDispatcherLookup(pinned, policy?.pinnedHostname, ssrfPolicy);
 
   if (!policy || policy.mode === "direct") {
-    return createHttp1Agent({ connect: withPinnedLookup(lookup, policy?.connect) }, timeoutMs);
+    return createHttp1Agent(
+      {
+        connect: withPinnedLookup(
+          lookup,
+          withZaiKeepAliveConnect(pinned.hostname, policy?.connect),
+        ),
+      },
+      timeoutMs,
+    );
   }
 
   if (policy.mode === "env-proxy") {
