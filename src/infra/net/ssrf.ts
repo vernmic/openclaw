@@ -710,7 +710,14 @@ function withZaiKeepAliveConnect(
   connect: Record<string, unknown> | undefined,
 ): Record<string, unknown> | undefined {
   const host = normalizeHostname(hostname);
-  if (host !== "api.z.ai" && !host.endsWith(".z.ai")) {
+  // The zai provider now runs on the CN coding endpoint (Vern, 2026-09-19 18:52); the
+  // gate follows the provider's hosts, not one edge, so a rollback to api.z.ai keeps working.
+  const isZaiTransportHost =
+    host === "api.z.ai" ||
+    host.endsWith(".z.ai") ||
+    host === "open.bigmodel.cn" ||
+    host.endsWith(".bigmodel.cn");
+  if (!isZaiTransportHost) {
     return connect;
   }
   return { ...(connect ?? {}), keepAlive: true, keepAliveInitialDelay: 15_000 };
