@@ -20,6 +20,7 @@ import type { ContextEngineLogicalTurnLease } from "./context-engine-logical-tur
 import { drainPendingContextEngineTurnsBeforeRun } from "./context-engine-turn-attempt.js";
 import {
   acceptContextEngineTurnIntent,
+  discardStaleAdmittedContextEngineTurnIntents,
   drainContextEngineTurnOutbox,
   enqueueContextEngineTurnCommit,
   enqueueContextEngineTurnIntent,
@@ -537,6 +538,111 @@ describe("context-engine turn outbox", () => {
         ).payload_json,
       ),
     ).toMatchObject({ state: "admitted" });
+  });
+
+  it("does not spend the cross-session budget on sessions whose head is not ready", async () => {
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-context-outbox-budget-"));
+    tempDirs.push(stateDir);
+    const database = openOpenClawAgentDatabase({
+      agentId: "main",
+      env: { OPENCLAW_STATE_DIR: stateDir },
+    });
+    // Twenty one-shot sessions, each left with a dead `admitted` head (their finalize never
+    // ran). They are older than the desk's fresh `ready` row, so with the old oldest-first
+    // budget they filled all 16 slots and the desk never drained at finalize.
+    for (let i = 0; i < 20; i += 1) {
+      const dead = createPayload({
+        advancementKey: `oneshot-${i}:1`,
+        databasePath: database.path,
+        sequence: 1,
+        sessionId: `oneshot-${i}`,
+      });
+      enqueueContextEngineTurnIntent({
+        admission: dead.boundary.admission,
+        database,
+        engineId: "test",
+        isHeartbeat: true,
+      });
+    }
+    const desk = createPayload({
+      advancementKey: "desk:1",
+      databasePath: database.path,
+      sequence: 1,
+      sessionId: "desk",
+    });
+    enqueueContextEngineTurnCommit({ database, engineId: "test", payload: desk });
+    const committed: string[] = [];
+    const commitTurn = vi.fn(async ({ advancementKey }: { advancementKey: string }) => {
+      committed.push(advancementKey);
+      return { status: "committed" as const };
+    });
+    const engine = {
+      info: { id: "test", name: "Test" },
+      ingest: async () => ({ ingested: true }),
+      assemble: async ({ messages }) => ({ messages, estimatedTokens: 0 }),
+      compact: async () => ({ ok: true, compacted: false }),
+      commitTurn,
+    } satisfies ContextEngine;
+
+    await drainContextEngineTurnOutbox({ database, engine, engineId: "test", warn: vi.fn() });
+
+    expect(committed).toEqual(["desk:1"]);
+    expect(
+      database.db.prepare("SELECT COUNT(*) AS n FROM context_engine_turn_outbox").get() as {
+        n: number;
+      },
+    ).toEqual({ n: 20 });
+  });
+
+  it("sweeps admitted intents older than the stale window and keeps fresh ones", () => {
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-context-outbox-sweep-"));
+    tempDirs.push(stateDir);
+    const database = openOpenClawAgentDatabase({
+      agentId: "main",
+      env: { OPENCLAW_STATE_DIR: stateDir },
+    });
+    const enqueueAdmitted = (sessionId: string) => {
+      const payload = createPayload({
+        advancementKey: `${sessionId}:1`,
+        databasePath: database.path,
+        sequence: 1,
+        sessionId,
+      });
+      enqueueContextEngineTurnIntent({
+        admission: payload.boundary.admission,
+        database,
+        engineId: "test",
+        isHeartbeat: false,
+      });
+    };
+    enqueueAdmitted("old-a");
+    enqueueAdmitted("old-b");
+    enqueueAdmitted("fresh");
+    const ready = createPayload({
+      advancementKey: "old-ready:1",
+      databasePath: database.path,
+      sequence: 1,
+      sessionId: "old-ready",
+    });
+    enqueueContextEngineTurnCommit({ database, engineId: "test", payload: ready });
+    const now = Date.now();
+    database.db
+      .prepare(
+        "UPDATE context_engine_turn_outbox SET created_at = ? WHERE session_id IN ('old-a','old-b','old-ready')",
+      )
+      .run(now - 2 * 60 * 60 * 1000);
+
+    const discarded = discardStaleAdmittedContextEngineTurnIntents({
+      database,
+      engineId: "test",
+      now,
+    });
+
+    expect(discarded).toBe(2);
+    const remaining = database.db
+      .prepare("SELECT session_id FROM context_engine_turn_outbox ORDER BY session_id")
+      .all() as Array<{ session_id: string }>;
+    expect(remaining.map((row) => row.session_id)).toEqual(["fresh", "old-ready"]);
   });
 
   it("does not let later same-session turns overtake a failed commit", async () => {

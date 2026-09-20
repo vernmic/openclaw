@@ -12,6 +12,7 @@ import {
   acceptContextEngineTurnIntent,
   blockContextEngineTurnIntent,
   discardContextEngineTurnIntent,
+  discardStaleAdmittedContextEngineTurnIntents,
   drainContextEngineTurnOutbox,
   enqueueContextEngineTurnCommit,
   enqueueContextEngineTurnIntent,
@@ -69,6 +70,16 @@ export async function drainPendingContextEngineTurnsBeforeRun(params: {
       agentId: target.agentId,
       path: databasePath,
     });
+    const discardedStale = discardStaleAdmittedContextEngineTurnIntents({
+      database,
+      engineId: params.lease.effectiveEngineId,
+      ownerPluginId: params.lease.effectiveEnginePluginId,
+    });
+    if (discardedStale > 0) {
+      warn(
+        `[context-engine] discarded ${discardedStale} stale admitted turn intent(s) older than one hour`,
+      );
+    }
     recoverContextEngineTurnOutbox({
       database,
       engineId: params.lease.effectiveEngineId,
@@ -236,11 +247,16 @@ export async function finalizeAcceptedContextEngineTurn(params: {
         messages: closedTurn.messages,
       },
     });
+    // Drain THIS session: the row just enqueued must commit in the same turn. A cross-session
+    // drain here spent its budget on the oldest sessions' dead heads and left the fresh row
+    // for the next turn's pre-run pass, so every ledger lagged one turn and a session's last
+    // turn was never committed until it got another.
     await drainContextEngineTurnOutbox({
       database,
       engine: params.lease.engine,
       engineId: params.lease.effectiveEngineId,
       ownerPluginId: params.lease.effectiveEnginePluginId,
+      sessionId: admission.sessionId,
       warn,
     });
   } catch (error) {

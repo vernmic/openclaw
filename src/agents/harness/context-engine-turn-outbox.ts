@@ -81,6 +81,45 @@ function outboxPayloadRequiresAdvancement() {
   return /* kysely-allow-raw: Payload state is owned by the closed outbox union above. */ sql<boolean>`json_extract(context_engine_turn_outbox.payload_json, '$.state') IS NOT 'blocked'`;
 }
 
+function outboxPayloadIsReady() {
+  return /* kysely-allow-raw: Payload state is owned by the closed outbox union above. */ sql<boolean>`json_extract(context_engine_turn_outbox.payload_json, '$.state') = 'ready'`;
+}
+
+function outboxPayloadIsAdmitted() {
+  return /* kysely-allow-raw: Payload state is owned by the closed outbox union above. */ sql<boolean>`json_extract(context_engine_turn_outbox.payload_json, '$.state') = 'admitted'`;
+}
+
+const STALE_ADMITTED_INTENT_MAX_AGE_MS = 60 * 60 * 1000;
+
+/**
+ * Drop `admitted` intents that finalize never reached. Admission proves provider dispatch
+ * only; the accepted transition is written by the turn's own finalize, so an admitted row
+ * older than any plausible running turn is dead. One-shot sessions (subagents, cron,
+ * heartbeats) never get the per-session recovery pass that would discard it, and every such
+ * row otherwise sits at the head of the cross-session drain order forever. Discarding early
+ * is harmless: a still-running turn's finalize re-creates the row as `accepted`.
+ */
+export function discardStaleAdmittedContextEngineTurnIntents(params: {
+  database: OpenClawAgentDatabase;
+  engineId: string;
+  ownerPluginId?: string;
+  maxAgeMs?: number;
+  now?: number;
+}): number {
+  const db = outboxDb(params.database);
+  const cutoff = (params.now ?? Date.now()) - (params.maxAgeMs ?? STALE_ADMITTED_INTENT_MAX_AGE_MS);
+  const result = executeSqliteQuerySync(
+    params.database.db,
+    db
+      .deleteFrom("context_engine_turn_outbox")
+      .where("engine_id", "=", params.engineId)
+      .where("owner_plugin_id", params.ownerPluginId ? "=" : "is", params.ownerPluginId ?? null)
+      .where("created_at", "<", cutoff)
+      .where(outboxPayloadIsAdmitted()),
+  );
+  return Number(result.numAffectedRows ?? 0);
+}
+
 export function isRetryableContextEngineTurnReadFailure(
   kind: ContextEngineTurnReadFailureKind,
 ): kind is "projection-unavailable" {
@@ -367,14 +406,46 @@ export async function drainContextEngineTurnOutbox(params: {
   if (params.sessionId) {
     pendingSessionsQuery = pendingSessionsQuery.where("session_id", "=", params.sessionId);
   }
+  // A session whose oldest non-blocked row is not `ready` cannot be drained now: only its own
+  // turn's finalize (accepted -> ready) or the per-session recovery pass can move that row,
+  // and draining must never let a later same-session turn overtake it. Such sessions are
+  // skipped here so they do not consume the cross-session budget (one-shot sessions with a
+  // dead `admitted` head used to fill all 16 slots and starve the turn that just finished).
+  // A caller that names one session keeps the old behaviour: its non-ready head is reported
+  // as pending rather than skipped.
   const pendingSessions = executeSqliteQuerySync(
     params.database.db,
     pendingSessionsQuery
       .groupBy("session_id")
       .orderBy("oldest_enqueue_sequence", "asc")
-      .limit(remaining),
+      .limit(params.sessionId ? remaining : remaining * 4),
   ).rows;
-  let activeSessionIds = pendingSessions.map(({ session_id }) => session_id);
+  const drainableSessionIds: string[] = [];
+  for (const { session_id } of pendingSessions) {
+    if (drainableSessionIds.length >= remaining) {
+      break;
+    }
+    if (params.sessionId) {
+      drainableSessionIds.push(session_id);
+      continue;
+    }
+    const head = executeSqliteQueryTakeFirstSync(
+      params.database.db,
+      db
+        .selectFrom("context_engine_turn_outbox")
+        .select(outboxPayloadIsReady().as("is_ready"))
+        .where("engine_id", "=", params.engineId)
+        .where("owner_plugin_id", params.ownerPluginId ? "=" : "is", params.ownerPluginId ?? null)
+        .where("session_id", "=", session_id)
+        .where(outboxPayloadRequiresAdvancement())
+        .orderBy(outboxEnqueueSequence(), "asc")
+        .limit(1),
+    );
+    if (head && Number(head.is_ready) === 1) {
+      drainableSessionIds.push(session_id);
+    }
+  }
+  let activeSessionIds = drainableSessionIds;
   while (remaining > 0 && activeSessionIds.length > 0) {
     const continuingSessionIds: string[] = [];
     for (const sessionId of activeSessionIds) {

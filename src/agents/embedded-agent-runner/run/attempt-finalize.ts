@@ -7,6 +7,7 @@ import { OPENCLAW_EMBEDDED_CONTEXT_ENGINE_HOST } from "../../../context-engine/h
 import { freezeDiagnosticTraceContext } from "../../../infra/diagnostic-trace-context.js";
 import { formatErrorMessage } from "../../../infra/errors.js";
 import { projectNestedToolActivityForHooks } from "../../../sessions/nested-tool-activity.js";
+import { openOpenClawAgentDatabase } from "../../../state/openclaw-agent-db.js";
 import { buildTrajectoryArtifacts } from "../../../trajectory/metadata.js";
 import {
   mergeAgentRunAttemptTerminal,
@@ -18,6 +19,7 @@ import { countActiveToolExecutions } from "../../embedded-agent-subscribe.handle
 import { isSignalTimeoutReason } from "../../failover-error.js";
 import { runAgentEndSideEffects } from "../../harness/agent-end-side-effects.js";
 import { finalizeHarnessContextEngineTurn } from "../../harness/context-engine-lifecycle.js";
+import { discardContextEngineTurnIntent } from "../../harness/context-engine-turn-outbox.js";
 import type { AgentSession, SessionMessageEntry } from "../../sessions/index.js";
 import { runContextEngineMaintenance } from "../context-engine-maintenance.js";
 import { log } from "../logger.js";
@@ -222,6 +224,35 @@ export async function completeEmbeddedAttemptAfterTurn(
               entryId: terminalEntryId,
             })
           : undefined;
+      if (admission && !terminal) {
+        // The facts cannot be built, so the outer owner never finalizes or discards this
+        // turn and its `admitted` outbox row would sit until the session's next pre-run
+        // recovery pass (never, for a one-shot session). Say why, and discard it now.
+        const reason = !terminalEntryId
+          ? "no transcript leaf id"
+          : "terminal anchor unresolved (projection needs rebuild, or the leaf is not an active message)";
+        log.warn(
+          `[context-engine] skipped turn advancement facts for ${admission.sessionKey}: ${reason}`,
+        );
+        const lease = attempt.contextEngineLogicalTurnLease;
+        if (lease) {
+          try {
+            discardContextEngineTurnIntent({
+              admission,
+              database: openOpenClawAgentDatabase({
+                agentId: admission.agentId,
+                path: admission.storePath,
+              }),
+              engineId: lease.effectiveEngineId,
+              ownerPluginId: lease.effectiveEnginePluginId,
+            });
+          } catch (error) {
+            log.warn(
+              `[context-engine] failed to discard unfinalizable turn intent: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          }
+        }
+      }
       if (admission && terminal) {
         attempt.onContextEngineTurnCandidate({
           boundary: { admission, terminal },
