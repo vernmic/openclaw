@@ -49,6 +49,15 @@ const UPDATE_RESPAWN_HEALTH_TIMEOUT_MS = 10_000;
 const UPDATE_RESPAWN_HEALTH_POLL_MS = 200;
 const LOG_FLUSH_EXIT_TIMEOUT_MS = 4_000;
 const HARD_EXIT_WATCHDOG_GRACE_MS = 2_000;
+// Interactive (SIGINT) stop: how long active embedded runs keep a fully OPEN
+// gateway - websocket admission included - to deliver what they already have,
+// before admission closes and the remaining runs are aborted. Long enough for a
+// finishing subagent to post its result; short enough that nobody sits through
+// the supervisor budget. Override with OPENCLAW_STOP_DELIVERY_GRACE_MS.
+const INTERACTIVE_STOP_DELIVERY_GRACE_MS = (() => {
+  const raw = Number(process.env.OPENCLAW_STOP_DELIVERY_GRACE_MS);
+  return Number.isFinite(raw) && raw >= 0 ? raw : 10_000;
+})();
 
 type GatewayRunSignalAction = "stop" | "restart" | "external-restart";
 type GatewayRunSignalRequest = {
@@ -205,6 +214,7 @@ export async function runGatewayLoop(params: {
   let committedGenericSuccessor: ChildProcess | true | null = null;
   let forceActiveRestartExit: (() => void) | null = null;
   let forceActiveStopExit: (() => void) | null = null;
+  let cutDeliveryGraceShort: (() => void) | null = null;
   let pendingStartupForceExitTimer: ReturnType<typeof setTimeout> | null = null;
   let restartDrainingMarked = false;
   let startupFailedWithoutServerHandle = false;
@@ -737,15 +747,18 @@ export async function runGatewayLoop(params: {
       forceActiveStopExit = () => {
         escalation += 1;
         if (escalation === 1) {
-          const aborted = abortActiveEmbeddedRunsForStop();
-          if (aborted > 0) {
+          // Cut the delivery grace short: close admission now and abort what is
+          // still running. The stop branch below owns both steps; signalling it
+          // keeps the order (fence, then abort) in one place.
+          if (cutDeliveryGraceShort) {
             gatewayLog.warn(
-              `received SIGINT during shutdown; aborting ${aborted} active embedded run(s) (SIGINT again to force exit)`,
+              "received SIGINT during shutdown; ending the delivery grace now (SIGINT again to force exit)",
             );
+            cutDeliveryGraceShort();
             return;
           }
-          // Nothing to abort: the operator is waiting on server close, not on a
-          // turn - fall through to the forced exit.
+          // Grace already over (or never started): the operator is waiting on
+          // server close - fall through to the forced exit.
         }
         gatewayLog.warn("received SIGINT during shutdown; forcing exit");
         clearForceExitTimer();
@@ -868,20 +881,52 @@ export async function runGatewayLoop(params: {
             ],
           );
         } else {
-          // An interactive stop lets active turns settle like a supervisor stop
-          // does, but tells the operator what it is waiting on and how to
-          // escalate (see the graduated SIGINT handling above).
+          // Interactive stop (Vern, 2026-09-20): give active runs a SHORT window
+          // with the gateway fully open - websocket admission included - to
+          // deliver what they already have (a finishing subagent posts its result
+          // over a loopback websocket; with admission closed it can only fail and
+          // retry, which is the warning storm this replaces). Then fence, abort
+          // whatever is still running so nothing keeps retrying, and drain.
+          // SIGTERM stops keep the supervisor contract: fenced at the signal,
+          // runs settle within the budget.
           if (acceptedRequest.signal === "SIGINT") {
+            let activeRuns = 0;
             try {
-              const activeRuns =
+              activeRuns =
                 eagerLifecycleRuntime.createGatewayActiveWorkSnapshot().counts.embeddedRuns;
-              if (activeRuns > 0) {
-                gatewayLog.info(
-                  `${activeRuns} active embedded run(s) settling before stop (SIGINT again to abort them)`,
-                );
-              }
             } catch {
-              /* the drain below reports its own snapshot */
+              /* treat as idle; the fence and drain below still run */
+            }
+            if (activeRuns > 0 && INTERACTIVE_STOP_DELIVERY_GRACE_MS > 0) {
+              gatewayLog.info(
+                `${activeRuns} active embedded run(s): ${Math.round(INTERACTIVE_STOP_DELIVERY_GRACE_MS / 1000)}s to deliver before admission closes and the rest are aborted (SIGINT again to skip the wait)`,
+              );
+              let cut: (() => void) | undefined;
+              const cutShort = new Promise<void>((resolve) => {
+                cut = resolve;
+              });
+              cutDeliveryGraceShort = () => cut?.();
+              try {
+                await Promise.race([
+                  eagerLifecycleRuntime
+                    .waitForGatewayActiveWork(INTERACTIVE_STOP_DELIVERY_GRACE_MS)
+                    .then(() => undefined),
+                  cutShort,
+                ]);
+              } catch (err) {
+                gatewayLog.warn(
+                  `delivery grace wait failed; closing admission now: ${formatErrorMessage(err)}`,
+                );
+              } finally {
+                cutDeliveryGraceShort = null;
+              }
+            }
+            markRestartDraining();
+            const leftover = abortActiveEmbeddedRunsForStop();
+            if (leftover > 0) {
+              gatewayLog.info(
+                `admission closed; aborted ${leftover} embedded run(s) still active after the delivery grace`,
+              );
             }
           }
           // Keep all process-owned work alive without spending the shutdown reserve
@@ -1110,9 +1155,13 @@ export async function runGatewayLoop(params: {
     if (hostLifecycle !== hostedStop) {
       void hostLifecycle?.retire();
     }
-    // Fence new roots synchronously for stops as well as restarts so admitted
-    // detached finalizers can drain before the signal tears down the gateway.
-    markRestartDraining();
+    // Fence new roots synchronously for restarts and supervisor stops so admitted
+    // detached finalizers can drain before the signal tears down the gateway. An
+    // interactive SIGINT stop fences inside its stop branch instead, after a short
+    // delivery grace with admission open (see runAcceptedRequest).
+    if (!(acceptedRequest.action === "stop" && signal === "SIGINT")) {
+      markRestartDraining();
+    }
     shuttingDown = true;
     gatewayLog.info(`received ${signal}; ${isRestart ? "restarting" : "shutting down"}`);
     if (isRestart) {

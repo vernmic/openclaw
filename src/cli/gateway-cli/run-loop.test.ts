@@ -1595,28 +1595,34 @@ describe("runGatewayLoop", () => {
     });
   });
 
-  it("lets active embedded runs settle on the first interactive SIGINT stop", async () => {
+  it("keeps admission open for the delivery grace on a SIGINT stop, then fences and drains", async () => {
     vi.clearAllMocks();
 
     await withIsolatedSignals(async ({ captureSignal }) => {
       const activeSnapshot = createActiveWorkSnapshot({ embeddedRuns: 1 }, [
         { kind: "embedded-run", count: 1, message: "1 active embedded run(s)" },
       ]);
+      // First snapshot: one run active (starts the grace). Later snapshots: idle
+      // (the run delivered and finished inside the grace).
       createGatewayActiveWorkSnapshot.mockReturnValueOnce(activeSnapshot);
-      waitForGatewayActiveWork.mockResolvedValueOnce({
-        drained: true,
-        snapshot: idleActiveWorkSnapshot,
+      let admissionClosedDuringGrace: boolean | undefined;
+      waitForGatewayActiveWork.mockImplementationOnce(async (timeoutMs) => {
+        admissionClosedDuringGrace = gatewayWorkAdmissionActual.isGatewayWorkAdmissionClosed();
+        expect(timeoutMs).toBe(10_000);
+        return { drained: true, snapshot: idleActiveWorkSnapshot };
       });
       const { close, runtime, exited } = await createSignaledLoopHarness();
 
       captureSignal("SIGINT")();
 
       await expect(exited).resolves.toBe(0);
+      expect(admissionClosedDuringGrace).toBe(false);
+      expect(gatewayWorkAdmissionActual.isGatewayWorkAdmissionClosed()).toBe(true);
       expect(abortEmbeddedAgentRun).not.toHaveBeenCalled();
       expect(gatewayLog.info).toHaveBeenCalledWith(
-        "1 active embedded run(s) settling before stop (SIGINT again to abort them)",
+        "1 active embedded run(s): 10s to deliver before admission closes and the rest are aborted (SIGINT again to skip the wait)",
       );
-      expect(waitForGatewayActiveWork).toHaveBeenCalledWith(315_000, undefined);
+      expect(waitForGatewayActiveWork).toHaveBeenLastCalledWith(315_000, undefined);
       expect(close).toHaveBeenCalledWith({
         reason: "gateway stopping",
         restartExpectedMs: null,
@@ -1625,7 +1631,40 @@ describe("runGatewayLoop", () => {
     });
   });
 
-  it("lets active embedded runs settle on a SIGTERM stop", async () => {
+  it("aborts what is still running when the delivery grace ends", async () => {
+    vi.clearAllMocks();
+
+    await withIsolatedSignals(async ({ captureSignal }) => {
+      const activeSnapshot = createActiveWorkSnapshot({ embeddedRuns: 2 }, [
+        { kind: "embedded-run", count: 2, message: "2 active embedded run(s)" },
+      ]);
+      // Still active when the grace expires and when the abort helper looks.
+      createGatewayActiveWorkSnapshot.mockReturnValue(activeSnapshot);
+      waitForGatewayActiveWork
+        .mockResolvedValueOnce({ drained: false, snapshot: activeSnapshot }) // the grace
+        .mockResolvedValueOnce({ drained: true, snapshot: idleActiveWorkSnapshot }); // after abort
+      const { close, runtime, exited } = await createSignaledLoopHarness();
+
+      captureSignal("SIGINT")();
+
+      await expect(exited).resolves.toBe(0);
+      expect(abortEmbeddedAgentRun).toHaveBeenCalledTimes(1);
+      expect(abortEmbeddedAgentRun).toHaveBeenCalledWith(undefined, {
+        mode: "all",
+        reason: "restart",
+      });
+      expect(gatewayLog.info).toHaveBeenCalledWith(
+        "admission closed; aborted 2 embedded run(s) still active after the delivery grace",
+      );
+      expect(close).toHaveBeenCalledWith({
+        reason: "gateway stopping",
+        restartExpectedMs: null,
+      });
+      expect(runtime.exit).toHaveBeenCalledWith(0);
+    });
+  });
+
+  it("lets active embedded runs settle on a SIGTERM stop with admission fenced at the signal", async () => {
     vi.clearAllMocks();
 
     await withIsolatedSignals(async ({ captureSignal }) => {
@@ -1633,21 +1672,23 @@ describe("runGatewayLoop", () => {
         { kind: "embedded-run", count: 1, message: "1 active embedded run(s)" },
       ]);
       createGatewayActiveWorkSnapshot.mockReturnValueOnce(activeSnapshot);
-      waitForGatewayActiveWork.mockResolvedValueOnce({
-        drained: true,
-        snapshot: idleActiveWorkSnapshot,
+      let admissionClosedAtDrain: boolean | undefined;
+      waitForGatewayActiveWork.mockImplementationOnce(async () => {
+        admissionClosedAtDrain = gatewayWorkAdmissionActual.isGatewayWorkAdmissionClosed();
+        return { drained: true, snapshot: idleActiveWorkSnapshot };
       });
       const { runtime, exited } = await createSignaledLoopHarness();
 
       captureSignal("SIGTERM")();
 
       await expect(exited).resolves.toBe(0);
+      expect(admissionClosedAtDrain).toBe(true);
       expect(abortEmbeddedAgentRun).not.toHaveBeenCalled();
       expect(runtime.exit).toHaveBeenCalledWith(0);
     });
   });
 
-  it("aborts active embedded runs on the second interactive SIGINT and still closes cleanly", async () => {
+  it("a second SIGINT during the grace ends it early: fence, abort, close cleanly", async () => {
     vi.clearAllMocks();
 
     await withIsolatedSignals(async ({ captureSignal }) => {
@@ -1655,19 +1696,16 @@ describe("runGatewayLoop", () => {
         { kind: "embedded-run", count: 2, message: "2 active embedded run(s)" },
       ]);
       createGatewayActiveWorkSnapshot.mockReturnValue(activeSnapshot);
-      let releaseDrain: (() => void) | undefined;
-      const pendingDrain = new Promise<void>((resolve) => {
-        releaseDrain = resolve;
+      let releaseGrace: (() => void) | undefined;
+      const pendingGrace = new Promise<void>((resolve) => {
+        releaseGrace = resolve;
       });
-      waitForGatewayActiveWork.mockImplementationOnce(async () => {
-        await pendingDrain;
-        return { drained: true, snapshot: idleActiveWorkSnapshot };
-      });
-      abortEmbeddedAgentRun.mockImplementationOnce(() => {
-        // The aborted runs settle: the drain completes on its own.
-        releaseDrain?.();
-        return true;
-      });
+      waitForGatewayActiveWork
+        .mockImplementationOnce(async () => {
+          await pendingGrace; // the grace: never expires on its own in this test
+          return { drained: false, snapshot: activeSnapshot };
+        })
+        .mockResolvedValueOnce({ drained: true, snapshot: idleActiveWorkSnapshot });
       const { close, runtime, exited } = await createSignaledLoopHarness();
 
       try {
@@ -1675,20 +1713,19 @@ describe("runGatewayLoop", () => {
         sigint();
         await waitForLoopCondition(
           () => waitForGatewayActiveWork.mock.calls.length === 1,
-          "expected the first SIGINT to begin the active-work drain",
+          "expected the first SIGINT to start the delivery grace",
         );
+        expect(gatewayWorkAdmissionActual.isGatewayWorkAdmissionClosed()).toBe(false);
         expect(abortEmbeddedAgentRun).not.toHaveBeenCalled();
 
         sigint();
 
         await expect(exited).resolves.toBe(0);
-        expect(abortEmbeddedAgentRun).toHaveBeenCalledWith(undefined, {
-          mode: "all",
-          reason: "restart",
-        });
         expect(gatewayLog.warn).toHaveBeenCalledWith(
-          "received SIGINT during shutdown; aborting 2 active embedded run(s) (SIGINT again to force exit)",
+          "received SIGINT during shutdown; ending the delivery grace now (SIGINT again to force exit)",
         );
+        expect(gatewayWorkAdmissionActual.isGatewayWorkAdmissionClosed()).toBe(true);
+        expect(abortEmbeddedAgentRun).toHaveBeenCalledTimes(1);
         expect(gatewayLog.info).not.toHaveBeenCalledWith(
           "received SIGINT during shutdown; ignoring",
         );
@@ -1698,13 +1735,13 @@ describe("runGatewayLoop", () => {
         });
         expect(runtime.exit).toHaveBeenCalledWith(0);
       } finally {
-        releaseDrain?.();
+        releaseGrace?.();
         await exited;
       }
     });
   });
 
-  it("forces exit on the third interactive SIGINT while runs are still draining", async () => {
+  it("forces exit on a further SIGINT once the grace is over and the drain is still pending", async () => {
     vi.clearAllMocks();
 
     await withIsolatedSignals(async ({ captureSignal }) => {
@@ -1716,25 +1753,25 @@ describe("runGatewayLoop", () => {
       const pendingDrain = new Promise<void>((resolve) => {
         releaseDrain = resolve;
       });
-      waitForGatewayActiveWork.mockImplementationOnce(async () => {
-        await pendingDrain;
-        return { drained: true, snapshot: idleActiveWorkSnapshot };
-      });
+      waitForGatewayActiveWork
+        .mockResolvedValueOnce({ drained: false, snapshot: activeSnapshot }) // the grace expires
+        .mockImplementationOnce(async () => {
+          await pendingDrain; // the post-abort drain hangs (the mock abort settles nothing)
+          return { drained: true, snapshot: idleActiveWorkSnapshot };
+        });
       const { close, runtime, exited } = await createSignaledLoopHarness();
 
       try {
         const sigint = captureSignal("SIGINT");
         sigint();
         await waitForLoopCondition(
-          () => waitForGatewayActiveWork.mock.calls.length === 1,
-          "expected the first SIGINT to begin the active-work drain",
+          () => waitForGatewayActiveWork.mock.calls.length === 2,
+          "expected the grace to expire and the post-abort drain to start",
         );
-
-        sigint(); // abort the runs (the mock never settles them)
         expect(abortEmbeddedAgentRun).toHaveBeenCalledTimes(1);
         expect(runtime.exit).not.toHaveBeenCalled();
 
-        sigint(); // force
+        sigint();
 
         await expect(exited).resolves.toBe(1);
         expect(gatewayLog.warn).toHaveBeenCalledWith(
@@ -1752,7 +1789,7 @@ describe("runGatewayLoop", () => {
     });
   });
 
-  it("forces exit on the second interactive SIGINT when nothing is left to abort", async () => {
+  it("forces exit on the second interactive SIGINT when nothing was running", async () => {
     vi.clearAllMocks();
 
     await withIsolatedSignals(async ({ captureSignal }) => {
@@ -1773,6 +1810,7 @@ describe("runGatewayLoop", () => {
           () => waitForGatewayActiveWork.mock.calls.length === 1,
           "expected the first SIGINT to begin the active-work drain",
         );
+        expect(gatewayWorkAdmissionActual.isGatewayWorkAdmissionClosed()).toBe(true);
 
         sigint();
 

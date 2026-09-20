@@ -46,6 +46,9 @@ function runWithSubagentCleanupWorkAdmission<T>(run: () => Promise<T>): Promise<
     : runWithGatewayIndependentRootWorkContinuation(run, "subagents:lifecycle-cleanup");
 }
 
+// Runs already reported as blocked by a gateway drain (one warning per run).
+const drainWarnedRunIds = new Set<string>();
+
 export function scheduleResumeSubagentRun(
   context: SubagentLifecycleCleanupContext,
   runId: string,
@@ -72,7 +75,12 @@ export function scheduleResumeSubagentRun(
       params.resumedRuns.delete(runId);
       params.resumeSubagentRun(runId);
     }, "subagents:resume").catch((err: unknown) => {
-      defaultRuntime.log(`[warn] subagent cleanup resume failed (${runId}): ${String(err)}`);
+      // While the gateway drains, this fails every retry for every finishing
+      // child; say it once per run, not once per attempt.
+      if (!isGatewayRestartDraining() || !drainWarnedRunIds.has(runId)) {
+        drainWarnedRunIds.add(runId);
+        defaultRuntime.log(`[warn] subagent cleanup resume failed (${runId}): ${String(err)}`);
+      }
       const current = params.runs.get(runId);
       if (
         isGatewayRestartDraining() &&
@@ -140,9 +148,12 @@ export function runDetachedCleanupAttempt(
         }
       }
     }).catch((err: unknown) => {
-      defaultRuntime.log(
-        `[warn] subagent cleanup admission failed (${args.runId}): ${String(err)}`,
-      );
+      if (!isGatewayRestartDraining() || !drainWarnedRunIds.has(args.runId)) {
+        drainWarnedRunIds.add(args.runId);
+        defaultRuntime.log(
+          `[warn] subagent cleanup admission failed (${args.runId}): ${String(err)}`,
+        );
+      }
       if (isGatewayRestartDraining()) {
         scheduleResumeSubagentRun(
           context,
