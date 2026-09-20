@@ -5,6 +5,7 @@ import {
 } from "../../config/sessions/session-accessor.js";
 import { supportsContextEngineDurableTurnAdvancement } from "../../context-engine/host-compat.js";
 import type { ContextEngineSessionTarget } from "../../context-engine/types.js";
+import { createSubsystemLogger } from "../../logging/subsystem.js";
 import type { UserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.types.js";
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import type { ContextEngineLogicalTurnLease } from "./context-engine-logical-turn.js";
@@ -22,6 +23,10 @@ import {
 
 const ACCEPTED_TURN_MAX_EVENTS = 20_000;
 const ACCEPTED_TURN_MAX_BYTES = 8 * 1024 * 1024;
+
+// Caps-gap review item 4 (Claude, 2026-09-20): the discard success path used to vanish with zero
+// trace - 29% of recent turns show aborted, and each one deleted its advancement intent silently.
+const log = createSubsystemLogger("context-engine-turn-attempt");
 
 export type ContextEngineTurnAttemptFacts = {
   boundary: TranscriptTurnBoundary;
@@ -155,6 +160,9 @@ export function discardContextEngineTurnAttemptIntent(params: {
       engineId: params.lease.effectiveEngineId,
       ownerPluginId: params.lease.effectiveEnginePluginId,
     });
+    log.debug(
+      `[context-engine] discarded unaccepted turn attempt: session=${admission.sessionKey ?? admission.sessionId} aborted=${params.facts.aborted} promptError=${params.facts.promptError} yieldAborted=${params.facts.yieldAborted}`,
+    );
   } catch (error) {
     warn(
       `[context-engine] failed to discard unaccepted turn intent: ${error instanceof Error ? error.message : String(error)}`,
