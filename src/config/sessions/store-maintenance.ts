@@ -479,6 +479,55 @@ export function archiveStaleDashboardEntries(
   return archived;
 }
 
+/**
+ * Archive stale sub-agent sessions straight from the store, by age alone (2026-09-20).
+ *
+ * The run-registry path cannot cover these: its archive timer only arms for runs that finish
+ * inside the current process and are not session-mode spawns, and the registry sweeper works
+ * from in-memory run state, so session-mode children - and anything orphaned by a gateway
+ * restart - are never swept. That is how 163 sessions accumulated. This pass makes the age
+ * rule universal: terminal-by-age, spawn-mode-agnostic, restart-proof.
+ */
+export function archiveStaleSubagentEntries(
+  store: Record<string, SessionEntry>,
+  archiveAfterMs: number | null,
+  opts: {
+    log?: boolean;
+    nowMs?: number;
+    onArchived?: (params: { key: string; entry: SessionEntry }) => void;
+    preserveKeys?: ReadonlySet<string>;
+  } = {},
+): number {
+  if (archiveAfterMs == null || archiveAfterMs <= 0) {
+    return 0;
+  }
+  const now = opts.nowMs ?? Date.now();
+  const cutoffMs = now - archiveAfterMs;
+  let archived = 0;
+  for (const [key, entry] of Object.entries(store)) {
+    const parsed = parseAgentSessionKey(key);
+    if (
+      !parsed?.rest.startsWith("subagent:") ||
+      entry.pinnedAt !== undefined ||
+      entry.archivedAt !== undefined ||
+      opts.preserveKeys?.has(key) === true
+    ) {
+      continue;
+    }
+    const activityAt = getSessionMaintenanceActivityAt(entry);
+    if (activityAt <= 0 || activityAt >= cutoffMs) {
+      continue;
+    }
+    entry.archivedAt = now;
+    opts.onArchived?.({ key, entry });
+    archived += 1;
+  }
+  if (archived > 0 && opts.log !== false) {
+    log.info("archived stale subagent session entries", { archived, archiveAfterMs });
+  }
+  return archived;
+}
+
 function isSyntheticSessionMaintenanceKey(sessionKey: string): boolean {
   const parsed = parseAgentSessionKey(sessionKey);
   const rest = normalizeLowercaseStringOrEmpty(parsed?.rest ?? sessionKey);

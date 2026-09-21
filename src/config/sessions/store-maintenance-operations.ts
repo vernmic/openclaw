@@ -1,10 +1,12 @@
 // Storage-neutral session maintenance operations for the file-backed session store.
 import path from "node:path";
+import { getRuntimeConfig } from "../config.js";
 import { enforceSessionDiskBudget, type SessionDiskBudgetSweepResult } from "./disk-budget.js";
 import { planSessionEntryMaintenance } from "./store-maintenance-plan.js";
 import { collectSessionMaintenancePreserveKeysForStore } from "./store-maintenance-preserve.js";
 import { resolveMaintenanceConfig } from "./store-maintenance-runtime.js";
 import {
+  archiveStaleSubagentEntries,
   countUnarchivedSessionEntries,
   getActiveSessionMaintenanceWarning,
   shouldRunSessionEntryMaintenance,
@@ -228,6 +230,22 @@ async function applyEnforcedMaintenance(params: {
     }),
     onRemoved: ({ entry }) => rememberRemovedSessionFile(removedSessionFiles, entry),
   });
+  // Sub-agent sessions (2026-09-20): archive by age straight from the store, regardless of
+  // in-memory run state or spawn mode. Session-mode children never arm the run-registry timer,
+  // and runs orphaned by a restart are invisible to the sweeper - that is how 163 sessions
+  // accumulated. Threshold: agents.defaults.subagents.archiveAfterMinutes (0 = disabled).
+  let subagentArchiveAfterMinutes = 0;
+  try {
+    subagentArchiveAfterMinutes =
+      getRuntimeConfig().agents?.defaults?.subagents?.archiveAfterMinutes ?? 0;
+  } catch {
+    // Config may be unavailable in narrow maintenance/test runtimes; treat as disabled.
+  }
+  archiveStaleSubagentEntries(
+    params.operation.store,
+    subagentArchiveAfterMinutes > 0 ? subagentArchiveAfterMinutes * 60_000 : null,
+    { preserveKeys: params.preserveSessionKeys },
+  );
   const referencedSessionIds = collectReferencedSessionIds(params.operation.store);
   await cleanupRemovedSessionArtifacts({
     operation: params.operation,
