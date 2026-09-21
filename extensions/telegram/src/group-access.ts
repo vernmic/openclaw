@@ -164,10 +164,15 @@ export const evaluateTelegramGroupPolicyAccess = (params: {
   }
   // Check chat-level allowlist first so that groups explicitly listed in the
   // `groups` config are not blocked by the sender-level "empty allowlist" guard.
+  // FORK PATCH (T-113, 2026-09-10, owner directive "remove or fix the broken gates"):
+  // groupPolicy "open" means open. The groups registry must not act as a blocklist
+  // for unlisted chats under an open policy — it gates only under "allowlist" policy.
+  // Symptom fixed: topics in any group silently rejected with reason
+  // "group-chat-not-allowed" while account config said groupPolicy: "open".
   let chatExplicitlyAllowed = false;
   if (params.checkChatAllowlist) {
     const groupAllowlist = params.resolveGroupPolicy(params.chatId, params.cfg);
-    if (groupAllowlist.allowlistEnabled && !groupAllowlist.allowed) {
+    if (groupPolicy !== "open" && groupAllowlist.allowlistEnabled && !groupAllowlist.allowed) {
       return { allowed: false, reason: "group-chat-not-allowed", groupPolicy };
     }
     // The chat is explicitly allowed when it has a dedicated entry in the groups

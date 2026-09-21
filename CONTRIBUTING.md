@@ -230,3 +230,11 @@ For issues that don't fit a specific repo, or if you're unsure, email **security
 8. **Remediation Advice**
 
 Reports without reproduction steps, demonstrated impact, and remediation advice will be deprioritized. Given the volume of AI-generated scanner findings, we must ensure we're receiving vetted reports from researchers who understand the issues.
+
+---
+
+## Fork Patches (local fork ledger — append-only; never edit a past entry, supersede it)
+
+Behavioral changes this fork carries on top of upstream. Each entry: id, date, file(s), origin, root cause, change, tests, status.
+
+- **FP-1 (T-113) — 2026-09-10 — telegram: group "open" policy was overridden by the groups-registry gate** — `extensions/telegram/src/group-access.ts`. Origin: owner directive ("remove or fix the broken gates") after every inbound message in unregistered forum topics of any group was silently rejected with reason `group-chat-not-allowed` (logged only as generic "not-allowed / skipping group message") while the account config declared `groupPolicy: "open"` with `groupAllowFrom: ["*"]`. Root cause: `evaluateTelegramGroupPolicyAccess` enforced the chat-registry allowlist unconditionally, so topics without a pre-existing registration (created via space setup or prior activation) were dropped at the door — no session created, mentions and replies included; `/start` created empty session shells but could not activate. Change: the registry now gates only under an explicit `"allowlist"` policy — added `groupPolicy !== "open" &&` to the `group-chat-not-allowed` return guard. An open policy means open, in every topic of every group the bot is a member of. Tests: extensions/telegram group-access + inbound-authorization suites green (27/27), including allowlist-enforcement cases proving `"allowlist"` behavior is unchanged. Status: applied, tested, staged on `fork/patch-telegram-open-group-policy`, awaiting owner review to commit. Related queued fork bugs (not yet patched): T-111 Telegram supergroup migration does not re-key the session; T-112 settle-wake completion push never fires for visible/watch spawns.
