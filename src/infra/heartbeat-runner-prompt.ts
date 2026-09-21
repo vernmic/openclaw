@@ -45,6 +45,12 @@ export function truncateHeartbeatPreview(value: string | undefined): string | un
 
 type HeartbeatSkipReason = "empty-heartbeat-file" | typeof HEARTBEAT_SKIP_NO_PENDING_EVENT;
 
+/** Exec completions delivered per heartbeat run (Vern 2026-09-21, re-derived from c5525e9091d
+ * for 9.4). A session is single-lane, so ten queued completions used to become one ten-item
+ * turn that blocked user input for its whole length; capped, the run takes the oldest three,
+ * the rest stay queued and the delivery step requests the next knock. */
+export const HEARTBEAT_EXEC_EVENTS_PER_RUN = 3;
+
 type HeartbeatPreflight = HeartbeatWakePayloadFlags & {
   session: ReturnType<typeof resolveHeartbeatSessionSelection>;
   pendingEventEntries: ReturnType<typeof peekSystemEventEntries>;
@@ -231,7 +237,13 @@ export function resolveHeartbeatRunPrompt(params: {
   // prompts and filtered cron noise. Late arrivals retain their queue identities.
   for (const event of pendingEventEntries) {
     if (isExecCompletionEvent(event.text)) {
-      if (params.preflight.shouldInspectPendingEvents) {
+      if (
+        params.preflight.shouldInspectPendingEvents &&
+        // Capped per run (see HEARTBEAT_EXEC_EVENTS_PER_RUN): both the prompt and the consume
+        // list below derive from this array, so what the model saw is exactly what leaves the
+        // queue; the remainder keeps its queue identity for the next knock.
+        execEvents.length < HEARTBEAT_EXEC_EVENTS_PER_RUN
+      ) {
         execEvents.push(event);
       }
     } else if (params.preflight.isCronWake || event.contextKey?.startsWith("cron:")) {

@@ -38,7 +38,10 @@ import { resolveCronJobsStorePathFromConfig } from "../cron/store.js";
 import { resolveAgentIdFromSessionKey } from "../routing/session-key.js";
 import { formatErrorMessage } from "./errors.js";
 import { classifyHeartbeatAgentOutcome } from "./heartbeat-delivery-normalization.js";
-import { HEARTBEAT_DELIVERY_CONTEXT_KEY_PREFIX } from "./heartbeat-events-filter.js";
+import {
+  HEARTBEAT_DELIVERY_CONTEXT_KEY_PREFIX,
+  isExecCompletionEvent,
+} from "./heartbeat-events-filter.js";
 import { emitHeartbeatEvent, resolveIndicatorType } from "./heartbeat-events.js";
 import { persistHeartbeatOutcome } from "./heartbeat-outcome-store.js";
 import { heartbeatLog as log, resolveHeartbeatChannelPlugin } from "./heartbeat-runner-config.js";
@@ -63,7 +66,11 @@ import {
 } from "./outbound/payloads.js";
 import { buildOutboundSessionContext } from "./outbound/session-context.js";
 import { withSystemEventOwner } from "./system-event-ownership.js";
-import { consumeSelectedSystemEventEntries, enqueueSystemEvent } from "./system-events.js";
+import {
+  consumeSelectedSystemEventEntries,
+  enqueueSystemEvent,
+  peekSystemEventEntries,
+} from "./system-events.js";
 
 type HeartbeatDispatch = {
   opts: HeartbeatRunOptions;
@@ -258,6 +265,22 @@ async function prepareHeartbeatDispatchReply(
     });
     if (consume && preflight.shouldInspectPendingEvents) {
       consumeSelectedSystemEventEntries(sessionKey, prepared.inspectedSystemEventsToConsume);
+      // The run took at most HEARTBEAT_EXEC_EVENTS_PER_RUN exec completions (re-derived from
+      // c5525e9091d); anything still queued needs its own knock, or it waits for the next
+      // unrelated wake. A queued user message wins over this wake at the busy check, which is
+      // the point of the cap.
+      if (
+        prepared.hasExecCompletion &&
+        peekSystemEventEntries(sessionKey).some((event) => isExecCompletionEvent(event.text))
+      ) {
+        requestHeartbeat({
+          source: "exec-event",
+          intent: "event",
+          reason: "exec-event",
+          agentId,
+          sessionKey,
+        });
+      }
       if (prepared.hasExecCompletion && prepared.hasCronEvents) {
         // Coalesced waiters share this turn, but exec and cron retain separate prompt/delivery policy.
         requestHeartbeat({

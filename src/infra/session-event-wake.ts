@@ -48,6 +48,13 @@ const SLOTS = ["task", "scheduled", "event"] as const;
 const COALESCE_MS = 250;
 const RETRY_MS = 1_000;
 export const SESSION_EVENT_IDLE_RETRY_MS = 60_000;
+// An event wake skipped for `requests-in-flight`/`active-run` retried every RETRY_MS. While an
+// agent runs a long turn (subagent tool loops of 30+ min) that is a 1 Hz knock per pending wake,
+// each attempt paying the full preflight - 2026-09-21 the gateway sat at one full core with
+// ~2.6 skipped wakes/s and every desk starved. The queue itself is right; only the knock was
+// too fast. Vern's cadence: 15 s for event wakes while busy (re-derived from c5525e9091d for
+// 9.4); scheduled/task keeps the idle grace above, explicit immediate wakes keep RETRY_MS.
+const BUSY_EVENT_WAKE_RETRY_MS = 15_000;
 const MAX_ACTIVE_TARGETS = 4;
 const GLOBAL_TARGET = "::";
 const RETRY_REASONS = new Set([
@@ -272,7 +279,10 @@ function createSessionEventWakeRuntime() {
         ? Math.max(0, result.retryAtMs - Date.now())
         : idleGrace
           ? SESSION_EVENT_IDLE_RETRY_MS
-          : RETRY_MS;
+          : wake.intent === "event" &&
+              (result?.reason === "requests-in-flight" || result?.reason === "active-run")
+            ? BUSY_EVENT_WAKE_RETRY_MS
+            : RETRY_MS;
     const deadline = performance.now() + delay;
     if (result) {
       const retryAtMs = Date.now() + delay;
