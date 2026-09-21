@@ -20,6 +20,7 @@ import type { ContextEngineLogicalTurnLease } from "./context-engine-logical-tur
 import { drainPendingContextEngineTurnsBeforeRun } from "./context-engine-turn-attempt.js";
 import {
   acceptContextEngineTurnIntent,
+  discardOrphanedReadyContextEngineTurnIntents,
   discardStaleAdmittedContextEngineTurnIntents,
   drainContextEngineTurnOutbox,
   enqueueContextEngineTurnCommit,
@@ -643,6 +644,55 @@ describe("context-engine turn outbox", () => {
       .prepare("SELECT session_id FROM context_engine_turn_outbox ORDER BY session_id")
       .all() as Array<{ session_id: string }>;
     expect(remaining.map((row) => row.session_id)).toEqual(["fresh", "old-ready"]);
+  });
+
+  it("sweeps ready intents whose session has no live window and keeps live ones", () => {
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-context-outbox-orphan-"));
+    tempDirs.push(stateDir);
+    const database = openOpenClawAgentDatabase({
+      agentId: "main",
+      env: { OPENCLAW_STATE_DIR: stateDir },
+    });
+    const enqueueReady = (sessionId: string) => {
+      const payload = createPayload({
+        advancementKey: `${sessionId}:1`,
+        databasePath: database.path,
+        sequence: 1,
+        sessionId,
+      });
+      enqueueContextEngineTurnCommit({ database, engineId: "test", payload });
+    };
+    enqueueReady("gone");
+    enqueueReady("ended");
+    enqueueReady("live");
+    const insertNode = database.db.prepare(
+      "INSERT INTO session_nodes (session_key, current_session_id, entry_json, updated_at) VALUES (?, ?, '{}', ?)",
+    );
+    const insertWindow = database.db.prepare(
+      "INSERT INTO session_windows (session_id, session_key, created_at, updated_at, ended_at) VALUES (?, ?, ?, ?, ?)",
+    );
+    const now = Date.now();
+    insertNode.run("agent:main:ended", "ended", now);
+    insertNode.run("agent:main:live", "live", now);
+    insertWindow.run("ended", "agent:main:ended", now, now, now - 1000);
+    insertWindow.run("live", "agent:main:live", now, now, null);
+    database.db
+      .prepare(
+        "UPDATE context_engine_turn_outbox SET created_at = ? WHERE session_id IN ('gone','ended','live')",
+      )
+      .run(now - 2 * 60 * 60 * 1000);
+
+    const discarded = discardOrphanedReadyContextEngineTurnIntents({
+      database,
+      engineId: "test",
+      now,
+    });
+
+    expect(discarded).toBe(2);
+    const remaining = database.db
+      .prepare("SELECT session_id FROM context_engine_turn_outbox ORDER BY session_id")
+      .all() as Array<{ session_id: string }>;
+    expect(remaining.map((row) => row.session_id)).toEqual(["live"]);
   });
 
   it("does not let later same-session turns overtake a failed commit", async () => {

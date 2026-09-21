@@ -90,6 +90,7 @@ function outboxPayloadIsAdmitted() {
 }
 
 const STALE_ADMITTED_INTENT_MAX_AGE_MS = 60 * 60 * 1000;
+const ORPHANED_READY_INTENT_MAX_AGE_MS = 60 * 60 * 1000;
 
 /**
  * Drop `admitted` intents that finalize never reached. Admission proves provider dispatch
@@ -116,6 +117,40 @@ export function discardStaleAdmittedContextEngineTurnIntents(params: {
       .where("owner_plugin_id", params.ownerPluginId ? "=" : "is", params.ownerPluginId ?? null)
       .where("created_at", "<", cutoff)
       .where(outboxPayloadIsAdmitted()),
+  );
+  return Number(result.numAffectedRows ?? 0);
+}
+
+/**
+ * Drop `ready` intents whose session has no live window. Since the same-turn commit fix
+ * drains per session, a `ready` row commits only when its OWN session runs another turn -
+ * one-shot sessions (dashboards, subagents, cron) never do, so their rows sit in the table
+ * forever: every pending scan slows and live desk rows get buried in the matrix. A desk's
+ * row always has a live `session_windows` entry and can never match, so the guard keys on
+ * the window, never on age alone - age alone must not erase evidence of a live desk stall.
+ */
+export function discardOrphanedReadyContextEngineTurnIntents(params: {
+  database: OpenClawAgentDatabase;
+  engineId: string;
+  ownerPluginId?: string;
+  maxAgeMs?: number;
+  now?: number;
+}): number {
+  const db = outboxDb(params.database);
+  const cutoff = (params.now ?? Date.now()) - (params.maxAgeMs ?? ORPHANED_READY_INTENT_MAX_AGE_MS);
+  const result = executeSqliteQuerySync(
+    params.database.db,
+    db
+      .deleteFrom("context_engine_turn_outbox")
+      .where("engine_id", "=", params.engineId)
+      .where("owner_plugin_id", params.ownerPluginId ? "=" : "is", params.ownerPluginId ?? null)
+      .where("created_at", "<", cutoff)
+      .where(outboxPayloadIsReady())
+      .where(/* kysely-allow-raw: Correlated NOT EXISTS has no fluent builder; liveness lives in session_windows. */ sql<boolean>`NOT EXISTS (
+          SELECT 1 FROM session_windows
+          WHERE session_windows.session_id = context_engine_turn_outbox.session_id
+            AND session_windows.ended_at IS NULL
+        )`),
   );
   return Number(result.numAffectedRows ?? 0);
 }

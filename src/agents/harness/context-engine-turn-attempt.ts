@@ -13,6 +13,7 @@ import {
   acceptContextEngineTurnIntent,
   blockContextEngineTurnIntent,
   discardContextEngineTurnIntent,
+  discardOrphanedReadyContextEngineTurnIntents,
   discardStaleAdmittedContextEngineTurnIntents,
   drainContextEngineTurnOutbox,
   enqueueContextEngineTurnCommit,
@@ -83,6 +84,16 @@ export async function drainPendingContextEngineTurnsBeforeRun(params: {
     if (discardedStale > 0) {
       warn(
         `[context-engine] discarded ${discardedStale} stale admitted turn intent(s) older than one hour`,
+      );
+    }
+    const discardedOrphans = discardOrphanedReadyContextEngineTurnIntents({
+      database,
+      engineId: params.lease.effectiveEngineId,
+      ownerPluginId: params.lease.effectiveEnginePluginId,
+    });
+    if (discardedOrphans > 0) {
+      warn(
+        `[context-engine] discarded ${discardedOrphans} orphaned ready turn intent(s) (session closed)`,
       );
     }
     recoverContextEngineTurnOutbox({
