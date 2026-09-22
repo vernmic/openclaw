@@ -2,7 +2,10 @@
  * Finalizes post-turn state, abort resources, and terminal trajectory artifacts.
  * It may assume stream execution and transcript writes are settled.
  */
-import { readActiveTranscriptEntryAnchor } from "../../../config/sessions/session-accessor.js";
+import {
+  readActiveTranscriptEntryAnchor,
+  readNewestActiveMessageTranscriptEntryAnchor,
+} from "../../../config/sessions/session-accessor.js";
 import { OPENCLAW_EMBEDDED_CONTEXT_ENGINE_HOST } from "../../../context-engine/host-compat.js";
 import { freezeDiagnosticTraceContext } from "../../../infra/diagnostic-trace-context.js";
 import { formatErrorMessage } from "../../../infra/errors.js";
@@ -214,7 +217,7 @@ export async function completeEmbeddedAttemptAfterTurn(
     if (attempt.onContextEngineTurnCandidate) {
       const admission = attempt.userTurnTranscriptRecorder?.getAdmissionReceipt();
       const terminalEntryId = sessionManager.getLeafId() ?? undefined;
-      const terminal =
+      const leafTerminal =
         admission && terminalEntryId
           ? readActiveTranscriptEntryAnchor({
               agentId: admission.agentId,
@@ -224,13 +227,36 @@ export async function completeEmbeddedAttemptAfterTurn(
               entryId: terminalEntryId,
             })
           : undefined;
+      // Fallback (2026-09-22, TERMINAL-ANCHOR-CACHE-TTL-FINDING + CLAUDE-REVIEW-terminal-anchor):
+      // the leaf can be a non-message record appended after the terminal message (openclaw.cache-ttl
+      // pruning records, openclaw.nested-tool.v1, lifecycle markers), which the leaf-based lookup
+      // cannot anchor. Select - never walk - the newest active MESSAGE from the projection, only
+      // when the leaf lookup failed and the index is clean, and never an anchor from before this
+      // turn's admission position.
+      const terminal =
+        leafTerminal ??
+        (admission
+          ? (() => {
+              const selected = readNewestActiveMessageTranscriptEntryAnchor({
+                agentId: admission.agentId,
+                sessionId: admission.sessionId,
+                sessionKey: admission.sessionKey,
+                storePath: admission.storePath,
+              });
+              const admissionFloor = (admission as { rawSeq?: number }).rawSeq;
+              if (selected && admissionFloor !== undefined && selected.rawSeq < admissionFloor) {
+                return undefined;
+              }
+              return selected;
+            })()
+          : undefined);
       if (admission && !terminal) {
         // The facts cannot be built, so the outer owner never finalizes or discards this
         // turn and its `admitted` outbox row would sit until the session's next pre-run
         // recovery pass (never, for a one-shot session). Say why, and discard it now.
         const reason = !terminalEntryId
           ? "no transcript leaf id"
-          : "terminal anchor unresolved (projection needs rebuild, or the leaf is not an active message)";
+          : "terminal anchor unresolved (leaf is not an active message; newest-active-message projection fallback also unresolved)";
         log.warn(
           `[context-engine] skipped turn advancement facts for ${admission.sessionKey}: ${reason}`,
         );
