@@ -689,6 +689,10 @@ export async function runGatewayLoop(params: {
     const { action, restartIntent } = acceptedRequest;
     const isRestart = action !== "stop";
     const acceptedStartupOperations = startupOperations;
+    // 9.4 invariant: a stop accepted while startup is still in flight (no server
+    // handle yet) owns an admitted cleanup join, and a repeated SIGINT must not
+    // force the exit out from under it. A steady-state stop escalates normally.
+    let joiningStartupCleanup = acceptedRequest.action === "stop" && server === null;
     if (acceptedRequest.action === "stop") {
       // A queued restart still needs startup's close handle. Only an effective
       // stop cancels preflight, including a stop overriding that queued restart.
@@ -744,6 +748,7 @@ export async function runGatewayLoop(params: {
       //         seconds;
       //   3rd - collapse the force-exit timer to zero and take the timeout path.
       let escalation = 0;
+      // True only while the stop awaits acceptedStartupOperations.drain().
       forceActiveStopExit = () => {
         escalation += 1;
         if (escalation === 1) {
@@ -759,6 +764,15 @@ export async function runGatewayLoop(params: {
           }
           // Grace already over (or never started): the operator is waiting on
           // server close - fall through to the forced exit.
+        }
+        // 9.4 invariant (postdates the 8.1 graduated-stop commit): an admitted
+        // startup cleanup join owns the exit. A repeated signal escalates a
+        // hanging turn, never a cleanup the loop already promised to await.
+        if (joiningStartupCleanup) {
+          gatewayLog.info(
+            "received SIGINT during shutdown; joining admitted startup cleanup, ignoring",
+          );
+          return;
         }
         gatewayLog.warn("received SIGINT during shutdown; forcing exit");
         clearForceExitTimer();
@@ -994,7 +1008,12 @@ export async function runGatewayLoop(params: {
             ? SHUTDOWN_TIMEOUT_MS - RESTART_CLOSE_REPLY_DRAIN_SHUTDOWN_RESERVE_MS
             : Math.max(0, (restartDrainDeadlineAt ?? Date.now()) - Date.now());
         if (acceptedRequest.action === "stop") {
-          await acceptedStartupOperations.drain();
+          joiningStartupCleanup = true;
+          try {
+            await acceptedStartupOperations.drain();
+          } finally {
+            joiningStartupCleanup = false;
+          }
         }
         await server?.close({
           reason: isRestart ? "gateway restarting" : "gateway stopping",

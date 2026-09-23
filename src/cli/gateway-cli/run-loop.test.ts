@@ -1448,13 +1448,26 @@ describe("runGatewayLoop", () => {
             expect(waitForGatewayActiveWork).toHaveBeenCalledWith(315_000, {
               onSnapshot: expect.any(Function),
             });
-            expect(createGatewayActiveWorkSnapshot).not.toHaveBeenCalled();
+            if (signal === "SIGINT") {
+              // The interactive stop asks how many embedded runs are active to
+              // decide whether to open a delivery grace. What it LOGS still comes
+              // from the drain reporter - the redaction assertions below hold.
+              expect(createGatewayActiveWorkSnapshot).toHaveBeenCalled();
+            } else {
+              expect(createGatewayActiveWorkSnapshot).not.toHaveBeenCalled();
+            }
             expect(close).not.toHaveBeenCalled();
             expect(runtime.exit).not.toHaveBeenCalled();
             expect(gatewayLog.info).toHaveBeenCalledWith(
               `draining active work before stop with timeout 315000ms: ${counts}`,
             );
-            captureSignal(signal)();
+            // A duplicate signal must not start a second drain. Under the
+            // graduated interactive stop a repeated SIGINT escalates instead of
+            // being ignored (covered by the delivery-grace tests below), so only
+            // the supervisor signal is repeated here.
+            if (signal !== "SIGINT") {
+              captureSignal(signal)();
+            }
             expect(waitForGatewayActiveWork).toHaveBeenCalledOnce();
             const onSnapshot = waitForGatewayActiveWork.mock.calls[0]?.[1]?.onSnapshot;
             now += 29_999;
@@ -1622,7 +1635,11 @@ describe("runGatewayLoop", () => {
       expect(gatewayLog.info).toHaveBeenCalledWith(
         "1 active embedded run(s): 10s to deliver before admission closes and the rest are aborted (SIGINT again to skip the wait)",
       );
-      expect(waitForGatewayActiveWork).toHaveBeenLastCalledWith(315_000, undefined);
+      // 9.4 reports drain progress through an onSnapshot callback the 8.1 stop
+      // path did not pass; the assertion still pins the drain budget.
+      expect(waitForGatewayActiveWork).toHaveBeenLastCalledWith(315_000, {
+        onSnapshot: expect.any(Function),
+      });
       expect(close).toHaveBeenCalledWith({
         reason: "gateway stopping",
         restartExpectedMs: null,
