@@ -57,7 +57,7 @@ node.rename node.list node.describe node.pluginSurface.refresh node.pluginTools.
 node.skills.update node.pending.drain node.pending.enqueue node.invoke node.pending.pull
 node.pending.ack node.invoke.progress node.invoke.result node.event cron.get cron.list
 cron.status cron.scratch.get cron.scratch.set cron.add cron.update cron.remove cron.run
-cron.runs gateway.identity.get gateway.restart.preflight gateway.restart.request system-presence
+cron.runs gateway.identity.get gateway.restart.preflight gateway.restart.request gateway.stop.request system-presence
 system-event message.action conversations.send conversations.turn conversations.turn.cancel send
 agent agent.identity.get agent.wait chat.history chat.startup chat.metadata chat.message.get
 chat.abort chat.send terminal.open terminal.input terminal.resize terminal.close

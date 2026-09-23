@@ -341,6 +341,9 @@ const CORE_GATEWAY_METHOD_SPECS = [
     { compatibilityRestored: true },
   ],
   ["gateway.restart.request", "restart", "operator.admin", "<=2026.7", CONTROL_PLANE_WRITE],
+  // Stop, not restart. Same group and scope as the restart request: both end
+  // the serving process, so an operator entitled to one is entitled to the other.
+  ["gateway.stop.request", "restart", "operator.admin", "<=2026.7", CONTROL_PLANE_WRITE],
   ["system-presence", "system", "operator.read", "<=2026.7"],
   ["system-event", "system", "operator.admin", "<=2026.7"],
   ["message.action", "send", "operator.write", "<=2026.7"],

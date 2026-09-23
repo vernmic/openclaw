@@ -3,6 +3,7 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { ErrorCodes, errorShape } from "../../../packages/gateway-protocol/src/index.js";
 import { readActiveGatewayLockIdentity } from "../../infra/gateway-lock.js";
+import { requestGatewayStopWithSignalAdmission } from "../../infra/gateway-stop.js";
 import {
   createSafeGatewayRestartPreflight,
   scheduleSafeGatewayRestart,
@@ -130,5 +131,32 @@ export const restartHandlers: GatewayRequestHandlers = {
   // restart-specific information, not the atomic fence owned by suspend.prepare.
   "gateway.restart.preflight": async ({ respond }) => {
     respond(true, createSafeGatewayRestartPreflight());
+  },
+  // Stop the gateway outright rather than restarting it. Drives the same
+  // graduated interactive stop as Ctrl-C (delivery grace with admission open,
+  // then fence, abort, drain), so a second request cuts the grace short exactly
+  // like a second SIGINT. On Windows this is the ONLY graceful stop available:
+  // `openclaw gateway stop` refuses a non-default OPENCLAW_HOME, and a
+  // cross-process kill is TerminateProcess with no drain.
+  "gateway.stop.request": async ({ respond, params }) => {
+    if (params !== undefined && !isRecord(params)) {
+      respond(
+        false,
+        undefined,
+        errorShape(ErrorCodes.INVALID_REQUEST, "invalid gateway.stop.request params"),
+      );
+      return;
+    }
+    const reason = normalizeReason(isRecord(params) ? params.reason : undefined);
+    const result = requestGatewayStopWithSignalAdmission(reason);
+    if (result.status === "unavailable") {
+      respond(
+        false,
+        undefined,
+        errorShape(ErrorCodes.UNAVAILABLE, "no run loop owns this gateway process"),
+      );
+      return;
+    }
+    respond(true, { ok: true, status: result.status, pid: process.pid });
   },
 };
