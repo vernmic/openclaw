@@ -9,6 +9,14 @@ import type { SubagentLifecycleController } from "./subagent-registry-lifecycle.
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 
 const SUBAGENT_SUSPENDED_DELIVERY_RETENTION_MS = 7 * 24 * 60 * 60_000;
+// A delivery suspended as a PERMANENT failure is never retried: the sink is
+// gone, not busy. Holding one for the full week only feeds the pressure cap -
+// 27 such entries (all "sink_unavailable"/"delivery path no longer exists",
+// created inside one incident window on 2026-09-22) warned once a minute for
+// hours and sat 23 short of the hard cap that blocks subagent admission. Keep
+// them long enough to be read during an incident, not long enough to BE one:
+// six hours, so a next-morning post-mortem still sees an overnight cluster.
+const SUBAGENT_PERMANENT_FAILURE_RETENTION_MS = 6 * 60 * 60_000;
 export const SUBAGENT_SUSPENDED_DELIVERY_WARNING_COUNT = 25;
 export const SUBAGENT_SUSPENDED_DELIVERY_HARD_CAP = 50;
 
@@ -16,8 +24,10 @@ export function isSuspendedPendingFinalDelivery(entry: SubagentRunRecord): boole
   return typeof entry.execution.endedAt === "number" && isDeliverySuspended(entry);
 }
 
-export function resolveSuspendedDeliveryExpiryMs(): number {
-  return SUBAGENT_SUSPENDED_DELIVERY_RETENTION_MS;
+export function resolveSuspendedDeliveryExpiryMs(entry?: SubagentRunRecord): number {
+  return entry?.delivery?.suspendedReason === "permanent_failure"
+    ? SUBAGENT_PERMANENT_FAILURE_RETENTION_MS
+    : SUBAGENT_SUSPENDED_DELIVERY_RETENTION_MS;
 }
 
 export async function discardSuspendedPendingFinalDelivery(params: {

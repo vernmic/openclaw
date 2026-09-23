@@ -289,7 +289,7 @@ export function createSubagentRegistrySweeper(params: {
         }
         if (isSuspendedPendingFinalDelivery(entry)) {
           const expired =
-            now - (entry.delivery?.suspendedAt ?? now) >= resolveSuspendedDeliveryExpiryMs();
+            now - (entry.delivery?.suspendedAt ?? now) >= resolveSuspendedDeliveryExpiryMs(entry);
           if (expired) {
             await discardSuspendedPendingFinalDelivery({
               runId,
