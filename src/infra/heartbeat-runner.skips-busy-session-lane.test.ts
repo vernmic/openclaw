@@ -123,6 +123,16 @@ function createExplicitHeartbeatTelegramConfig(storePath: string): OpenClawConfi
   } as unknown as OpenClawConfig;
 }
 
+function createUnownedRosterHeartbeatTelegramConfig(storePath: string): OpenClawConfig {
+  // Roster property present (two entries) but no `systemAgent.agentId`, so no
+  // ambient owner resolves: readAgentRosterProperty only reads `agents.entries`
+  // or `agents.list` (never `defaults`), and a two-entry roster has no sole
+  // agent to fall back to, so tryResolveAmbientHeartbeatAgentId returns undefined.
+  const cfg = createExplicitHeartbeatTelegramConfig(storePath);
+  delete cfg.agents!.defaults!.systemAgent;
+  return cfg;
+}
+
 async function seedHeartbeatTelegramSession(
   storePath: string,
   cfg: OpenClawConfig,
@@ -539,18 +549,25 @@ describe("heartbeat runner skips when target session lane is busy", () => {
   });
 
   it("still defers a scheduled heartbeat while the Main lane is busy when no ambient owner is named", async () => {
-    // Polarity guard: this config names no `systemAgent.agentId`, so the ambient
-    // owner is not an explicitly-targeted sibling. An unresolvable owner must keep
-    // today's Main-lane deferral -- the `&&` form would silently drop the gate for
-    // every agent, including the main desk, whenever the owner could not resolve.
+    // Polarity guard: the roster is present (two entries) but there is no
+    // `systemAgent.agentId`, so tryResolveAmbientHeartbeatAgentId returns
+    // undefined. An unresolvable owner must keep today's Main-lane deferral -- the
+    // `&&` form would silently drop the gate for every agent, including the main
+    // desk, whenever the owner could not resolve.
     await withTempHeartbeatSandbox(async ({ storePath, replySpy }) => {
-      const cfg = createHeartbeatTelegramConfig(storePath);
-      await seedHeartbeatTelegramSession(storePath, cfg);
+      const cfg = createUnownedRosterHeartbeatTelegramConfig(storePath);
+      // The ambient main-session resolver throws for an ownerless roster, so seed
+      // the running agent's own main session directly.
+      await seedSessionStore(storePath, "agent:main:main", {
+        lastChannel: "telegram",
+        lastProvider: "telegram",
+        lastTo: "123",
+      });
 
       const result = await runHeartbeat(
         cfg,
         replySpy,
-        { intent: "scheduled" },
+        { agentId: "main", intent: "scheduled" },
         { getQueueSize: vi.fn((lane?: string) => (lane === CommandLane.Main ? 1 : 0)) },
       );
 
