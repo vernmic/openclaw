@@ -25,7 +25,18 @@ export function isSuspendedPendingFinalDelivery(entry: SubagentRunRecord): boole
 }
 
 export function resolveSuspendedDeliveryExpiryMs(entry?: SubagentRunRecord): number {
-  return entry?.delivery?.suspendedReason === "permanent_failure"
+  // Two different fields carry "this will never deliver", and the live store
+  // proves they disagree: all 29 stuck rows on 2026-09-23 read
+  // disposition="permanent_failure" with suspendedReason="expiry" (attempts
+  // exhausted). `disposition` is the delivery OUTCOME and the marker the rest
+  // of the registry treats as unrecoverable (subagent-delivery-state.ts:155);
+  // `suspendedReason` is only why the run was parked. Keying on suspendedReason
+  // alone matched nothing in production.
+  const delivery = entry?.delivery;
+  const permanentlyFailed =
+    delivery?.disposition === "permanent_failure" ||
+    delivery?.suspendedReason === "permanent_failure";
+  return permanentlyFailed
     ? SUBAGENT_PERMANENT_FAILURE_RETENTION_MS
     : SUBAGENT_SUSPENDED_DELIVERY_RETENTION_MS;
 }
