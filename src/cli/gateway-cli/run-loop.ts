@@ -58,6 +58,10 @@ const INTERACTIVE_STOP_DELIVERY_GRACE_MS = (() => {
   const raw = Number(process.env.OPENCLAW_STOP_DELIVERY_GRACE_MS);
   return Number.isFinite(raw) && raw >= 0 ? raw : 10_000;
 })();
+// Ceiling on "a repeated SIGINT is refused because an admitted startup cleanup
+// join owns the exit". The join keeps its promise to finish, but never at the
+// cost of leaving the operator with no way out.
+const STARTUP_CLEANUP_JOIN_FORCE_FLOOR_MS = 45_000;
 
 type GatewayRunSignalAction = "stop" | "restart" | "external-restart";
 type GatewayRunSignalRequest = {
@@ -769,8 +773,20 @@ export async function runGatewayLoop(params: {
         // startup cleanup join owns the exit. A repeated signal escalates a
         // hanging turn, never a cleanup the loop already promised to await.
         if (joiningStartupCleanup) {
-          gatewayLog.info(
-            "received SIGINT during shutdown; joining admitted startup cleanup, ignoring",
+          // Refuse the immediate force - but "a second signal always terminates"
+          // is this stop's whole contract, so arm a floor rather than leaving the
+          // operator with no escape. A cleanup that cannot settle in this window
+          // is the Task Manager scenario this stop exists to end. Native 9.4
+          // logs "ignoring" here and offers nothing. A normal completion clears
+          // the timer on its way out (clearForceExitTimer before the exit paths).
+          gatewayLog.warn(
+            `received SIGINT while joining admitted startup cleanup; letting it finish, forcing exit in ${Math.round(
+              STARTUP_CLEANUP_JOIN_FORCE_FLOOR_MS / 1000,
+            )}s if it does not settle`,
+          );
+          armForceExitTimer(
+            STARTUP_CLEANUP_JOIN_FORCE_FLOOR_MS,
+            "startup cleanup join did not settle after a repeated stop signal",
           );
           return;
         }
