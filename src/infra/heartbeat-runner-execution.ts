@@ -187,7 +187,18 @@ export async function resolveHeartbeatWakeStage(opts: HeartbeatRunOptions) {
   }
 
   const getSize = opts.deps?.getQueueSize ?? getQueueSize;
-  if (getSize(CommandLane.Main) > 0) {
+  // The Main lane is the gateway's shared foreground queue and carries work for
+  // every agent, so its depth is a busy signal only for the agent that owns the
+  // ambient heartbeat (the main desk). A sibling agent's scheduled heartbeat must
+  // not be starved by another agent's Main-lane work -- it still defers on its own
+  // active runs and its own target session. See docs/gateway/heartbeat.md
+  // ("Sibling agents do not pause each other").
+  const ambientHeartbeatAgentId = tryResolveAmbientHeartbeatAgentId(cfg);
+  // An unknown owner keeps today default of deferral: the shared Main lane only
+  // stops gating when the ambient owner is explicitly resolved to a sibling.
+  const ownsMainLane =
+    ambientHeartbeatAgentId === undefined || normalizeAgentId(ambientHeartbeatAgentId) === agentId;
+  if (ownsMainLane && getSize(CommandLane.Main) > 0) {
     return skippedHeartbeatStage(HEARTBEAT_SKIP_REQUESTS_IN_FLIGHT, startedAt);
   }
 

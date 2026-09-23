@@ -36,6 +36,7 @@ import { type HeartbeatDeps, runHeartbeatOnce } from "./heartbeat-runner.js";
 import {
   seedHeartbeatScratchForTest,
   seedMainSessionStore,
+  seedSessionStore,
   withTempHeartbeatSandbox,
 } from "./heartbeat-runner.test-utils.js";
 import {
@@ -87,6 +88,30 @@ function createHeartbeatTelegramConfig(storePath: string): OpenClawConfig {
         heartbeat: { every: "30m", target: "last" },
         model: { primary: "test/model" },
       },
+    },
+    channels: {
+      telegram: {
+        enabled: true,
+        token: "fake",
+        allowFrom: ["123"],
+      },
+    },
+  } as unknown as OpenClawConfig;
+}
+
+function createExplicitHeartbeatTelegramConfig(storePath: string): OpenClawConfig {
+  // Explicit roster with a named system owner: the ambient heartbeat (and the
+  // Main-lane deferral) belongs to "main"; "gardener" is a sibling agent.
+  return {
+    session: { store: storePath },
+    agents: {
+      ownership: "explicit",
+      defaults: {
+        heartbeat: { every: "30m", target: "last" },
+        model: { primary: "test/model" },
+        systemAgent: { agentId: "main" },
+      },
+      entries: { main: {}, gardener: {} },
     },
     channels: {
       telegram: {
@@ -467,6 +492,73 @@ describe("heartbeat runner skips when target session lane is busy", () => {
       });
     },
   );
+
+  it("runs a sibling agent's scheduled heartbeat while only the Main lane is busy", async () => {
+    // The Main lane is the gateway's shared foreground queue owned by the main
+    // desk; a maintenance agent with nothing of its own running must not be
+    // starved by the main desk's queued work.
+    await withTempHeartbeatSandbox(async ({ storePath, replySpy }) => {
+      const cfg = createExplicitHeartbeatTelegramConfig(storePath);
+      await seedSessionStore(storePath, "agent:gardener:main", {
+        lastChannel: "telegram",
+        lastProvider: "telegram",
+        lastTo: "123",
+      });
+      replySpy.mockResolvedValue({ text: "HEARTBEAT_OK" });
+
+      const result = await runHeartbeat(
+        cfg,
+        replySpy,
+        { agentId: "gardener", intent: "scheduled" },
+        { getQueueSize: vi.fn((lane?: string) => (lane === CommandLane.Main ? 1 : 0)) },
+      );
+
+      expect(result.status).toBe("ran");
+      expect(replySpy).toHaveBeenCalledOnce();
+    });
+  });
+
+  it("still defers the main agent's own scheduled heartbeat while the Main lane is busy", async () => {
+    // The agent that owns the ambient heartbeat keeps the existing Main-lane
+    // deferral; only sibling agents are exempt from it.
+    await withTempHeartbeatSandbox(async ({ storePath, replySpy }) => {
+      const cfg = createExplicitHeartbeatTelegramConfig(storePath);
+      await seedHeartbeatTelegramSession(storePath, cfg);
+
+      const result = await runHeartbeat(
+        cfg,
+        replySpy,
+        { intent: "scheduled" },
+        { getQueueSize: vi.fn((lane?: string) => (lane === CommandLane.Main ? 1 : 0)) },
+      );
+
+      expect(result).toEqual({ status: "skipped", reason: HEARTBEAT_SKIP_REQUESTS_IN_FLIGHT });
+      expect(getLastHeartbeatEvent()).toMatchObject({ ...result, durationMs: expect.any(Number) });
+      expect(replySpy).not.toHaveBeenCalled();
+    });
+  });
+
+  it("still defers a scheduled heartbeat while the Main lane is busy when no ambient owner is named", async () => {
+    // Polarity guard: this config names no `systemAgent.agentId`, so the ambient
+    // owner is not an explicitly-targeted sibling. An unresolvable owner must keep
+    // today's Main-lane deferral -- the `&&` form would silently drop the gate for
+    // every agent, including the main desk, whenever the owner could not resolve.
+    await withTempHeartbeatSandbox(async ({ storePath, replySpy }) => {
+      const cfg = createHeartbeatTelegramConfig(storePath);
+      await seedHeartbeatTelegramSession(storePath, cfg);
+
+      const result = await runHeartbeat(
+        cfg,
+        replySpy,
+        { intent: "scheduled" },
+        { getQueueSize: vi.fn((lane?: string) => (lane === CommandLane.Main ? 1 : 0)) },
+      );
+
+      expect(result).toEqual({ status: "skipped", reason: HEARTBEAT_SKIP_REQUESTS_IN_FLIGHT });
+      expect(getLastHeartbeatEvent()).toMatchObject({ ...result, durationMs: expect.any(Number) });
+      expect(replySpy).not.toHaveBeenCalled();
+    });
+  });
 
   it("returns requests-in-flight when the target session has an active reply run", async () => {
     await withTempHeartbeatSandbox(async ({ storePath, replySpy }) => {
