@@ -4,6 +4,8 @@ import { logWarn } from "../logger.js";
 import { sessionMcpRuntimeOwners } from "./agent-bundle-mcp-runtime-owner.js";
 import {
   SESSION_MCP_MAX_LIVE_RUNTIMES,
+  SESSION_MCP_ORPHAN_SLOT_GRACE_MS,
+  SESSION_MCP_PIN_STALE_MS,
   SESSION_MCP_RUNTIME_SWEEP_INTERVAL_MS,
   type CreateSessionMcpRuntime,
 } from "./agent-bundle-mcp-runtime-shared.js";
@@ -30,6 +32,13 @@ type AdvertisedScopedCatalogEntry = {
   signaturesByServer: Map<string, string>;
 };
 
+/**
+ * A live-runtime slot. `orphanSince` is bookkeeping for the sweep's reconciliation pass: the
+ * timestamp at which this slot was first observed owned by no runtime, cleared as soon as an owner
+ * is seen again. Absent means "currently owned, or never yet observed orphaned".
+ */
+type SessionMcpRuntimeSlot = { idleTtlMs: number; orphanSince?: number };
+
 type SessionMcpRuntimeManagerStore = {
   configReload?: SessionMcpConfigPublication;
   runtimesBySessionId: Map<string, SessionMcpRuntime>;
@@ -45,8 +54,8 @@ type SessionMcpRuntimeManagerStore = {
   createRuntime: CreateSessionMcpRuntime;
   now: () => number;
   idleSweepIntervalMs: number;
-  runtimeSlots: WeakMap<SessionMcpRuntime, { idleTtlMs: number }>;
-  liveRuntimeSlots: Set<{ idleTtlMs: number }>;
+  runtimeSlots: WeakMap<SessionMcpRuntime, SessionMcpRuntimeSlot>;
+  liveRuntimeSlots: Set<SessionMcpRuntimeSlot>;
   enableIdleSweepTimer: boolean;
   idleSweepTimer: ReturnType<typeof setInterval> | undefined;
   idleSweepInFlight: Promise<void> | undefined;
@@ -257,26 +266,89 @@ export function createSessionMcpRuntimeManagerLifecycle(store: SessionMcpRuntime
     return run;
   };
 
+  /**
+   * Reclaim live slots that no runtime owns any more.
+   *
+   * `liveRuntimeSlots` is strong and `runtimeSlots` is keyed BY runtime, so a slot whose runtime
+   * left `runtimesBySessionId` without releasing it is unreachable: the sweep above cannot iterate
+   * it, nothing else holds a reference, and it counts against the cap until the process dies. This
+   * pass is the only thing that can find those, by diffing the Set against the runtimes that
+   * actually exist.
+   *
+   * A slot is reclaimed only after SESSION_MCP_ORPHAN_SLOT_GRACE_MS of CONTINUOUS orphanhood,
+   * because reserveRuntimeSlot adds a slot before its runtime is registered - a brief unowned
+   * window is normal and must not be stolen from a runtime that is still being created.
+   */
+  const reclaimOrphanedRuntimeSlots = (nowMs: number): number => {
+    const owned = new Set<SessionMcpRuntimeSlot>();
+    for (const runtime of store.runtimesBySessionId.values()) {
+      const slot = store.runtimeSlots.get(runtime);
+      if (slot) {
+        owned.add(slot);
+      }
+    }
+    let reclaimed = 0;
+    for (const slot of store.liveRuntimeSlots) {
+      if (owned.has(slot)) {
+        // Owned again (or still being created): the orphan clock does not carry over.
+        delete slot.orphanSince;
+        continue;
+      }
+      if (slot.orphanSince === undefined) {
+        slot.orphanSince = nowMs;
+        continue;
+      }
+      if (nowMs - slot.orphanSince < SESSION_MCP_ORPHAN_SLOT_GRACE_MS) {
+        continue;
+      }
+      store.liveRuntimeSlots.delete(slot);
+      reclaimed += 1;
+    }
+    if (reclaimed > 0) {
+      logWarn(
+        `bundle-mcp: reclaimed ${reclaimed} orphaned MCP runtime slot(s) held by no runtime; ` +
+          `${store.liveRuntimeSlots.size}/${SESSION_MCP_MAX_LIVE_RUNTIMES} live slots remain`,
+      );
+    }
+    return reclaimed;
+  };
+
   const sweepIdleRuntimes = async (): Promise<number> => {
     const nowMs = store.now();
     const expired: Array<{ runtimeKey: string; runtime: SessionMcpRuntime }> = [];
     for (const [runtimeKey, runtime] of store.runtimesBySessionId.entries()) {
       const idleTtlMs = store.runtimeSlots.get(runtime)?.idleTtlMs ?? 0;
-      if (idleTtlMs === 0 || (runtime.activeLeases ?? 0) > 0) {
+      if (idleTtlMs === 0) {
         continue;
       }
-      if (nowMs - runtime.lastUsedAt < idleTtlMs) {
+      const idleForMs = nowMs - runtime.lastUsedAt;
+      if (idleForMs < idleTtlMs) {
         continue;
       }
+      // A lease or an outstanding work chain normally protects a runtime, but honouring either
+      // without bound lets one abandoned lease pin a slot for the life of the process (2026-09-27:
+      // the cap was reached with no MCP child alive to justify it). lastUsedAt is the honest signal
+      // - a busy runtime keeps touching it - so past this ceiling the holder is gone, not working.
+      const pinStale = idleForMs >= idleTtlMs + SESSION_MCP_PIN_STALE_MS;
+      const leased = (runtime.activeLeases ?? 0) > 0;
       // Acquisition runs outside the runtime lease. Keep its current
       // transport until the chain records the refreshed runtime.
-      if (store.runtimeWorkChains.has(runtimeKey)) {
+      const chained = store.runtimeWorkChains.has(runtimeKey);
+      if ((leased || chained) && !pinStale) {
         continue;
+      }
+      if (leased || chained) {
+        logWarn(
+          `bundle-mcp: evicting pinned MCP runtime ${runtimeKey} after ${Math.round(idleForMs / 1000)}s idle ` +
+            `(activeLeases=${runtime.activeLeases ?? 0} workChain=${chained}); its holder did not release it`,
+        );
+        store.runtimeWorkChains.delete(runtimeKey);
       }
       store.runtimesBySessionId.delete(runtimeKey);
       store.connectionMetaByRuntimeKey.delete(runtimeKey);
       expired.push({ runtimeKey, runtime });
     }
+    reclaimOrphanedRuntimeSlots(nowMs);
     const touchedSessionIds = new Set(expired.map(({ runtime }) => runtime.sessionId));
     for (const sessionId of touchedSessionIds) {
       if (runtimeKeysForSessionId(sessionId).length === 0) {
@@ -493,6 +565,34 @@ export function createSessionMcpRuntimeManagerLifecycle(store: SessionMcpRuntime
     totalActiveLeasesForSessionId,
     runExclusiveOnRuntimeKeys,
     sweepIdleRuntimes,
+    /**
+     * Live-runtime slot accounting, for diagnostics and tests.
+     *
+     * Until 2026-09-27 `liveRuntimeSlots.size` was observable only by hitting the cap and reading
+     * the throw - i.e. at 100% of capacity, after the damage. `orphaned` is the count the
+     * reconciliation pass is watching: slots held by no runtime.
+     */
+    readLiveRuntimeSlotStats: () => {
+      const owned = new Set<SessionMcpRuntimeSlot>();
+      for (const runtime of store.runtimesBySessionId.values()) {
+        const slot = store.runtimeSlots.get(runtime);
+        if (slot) {
+          owned.add(slot);
+        }
+      }
+      let orphaned = 0;
+      for (const slot of store.liveRuntimeSlots) {
+        if (!owned.has(slot)) {
+          orphaned += 1;
+        }
+      }
+      return {
+        live: store.liveRuntimeSlots.size,
+        max: SESSION_MCP_MAX_LIVE_RUNTIMES,
+        runtimes: store.runtimesBySessionId.size,
+        orphaned,
+      };
+    },
     reserveRuntimeSlot,
     releaseEmptyRuntimeSlot,
     disposeRuntime,

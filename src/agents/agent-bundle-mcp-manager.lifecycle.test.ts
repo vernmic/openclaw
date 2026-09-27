@@ -6,6 +6,8 @@ import { withPluginRuntimeRegistryScope } from "../plugins/runtime/gateway-reque
 import { createSessionMcpRuntimeManager } from "./agent-bundle-mcp-manager.test-support.js";
 import type { SessionMcpRuntimeManager } from "./agent-bundle-mcp-manager.test-support.js";
 import {
+  SESSION_MCP_MAX_LIVE_RUNTIMES,
+  SESSION_MCP_PIN_STALE_MS,
   SESSION_MCP_RUNTIME_SWEEP_INTERVAL_MS,
   type CreateSessionMcpRuntime,
 } from "./agent-bundle-mcp-runtime-shared.js";
@@ -555,6 +557,59 @@ describe("MCP manager creation ownership", () => {
       expect(nextRuntime.dispose).not.toHaveBeenCalled();
       expect(manager.listSessionIds()).toEqual([params.sessionId]);
       expect(manager.resolveSessionId(params.sessionKey)).toBe(params.sessionId);
+    });
+  });
+  describe("live runtime slot accounting (2026-09-27 cap exhaustion)", () => {
+    // The cap is per PROCESS. Before this, an abandoned lease or a stale work chain made
+    // sweepIdleRuntimes skip a runtime forever, so its slot counted against the 256 cap until the
+    // gateway was replaced. lastUsedAt is the honest signal: a busy runtime keeps touching it.
+    const ttlMs = 60_000;
+    const leasedParams = {
+      ...params,
+      cfg: { mcp: { sessionIdleTtlMs: ttlMs, servers: { pinned: { command: "noop" } } } },
+    };
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("evicts a leased runtime once it is idle far past its TTL", async () => {
+      vi.useFakeTimers();
+      const manager = createManager(vi.fn<CreateSessionMcpRuntime>(createRuntimeFixture));
+      const runtime = await manager.getOrCreate(leasedParams);
+      // An owner that took a lease and died without releasing it.
+      runtime.acquireLease?.();
+      expect(runtime.activeLeases).toBe(1);
+
+      vi.advanceTimersByTime(ttlMs + SESSION_MCP_PIN_STALE_MS + 1_000);
+      await manager.sweepIdleRuntimes();
+
+      expect(runtime.dispose).toHaveBeenCalled();
+      expect(manager.peekSession({ sessionId: params.sessionId })).toBeUndefined();
+      expect(manager.readLiveRuntimeSlotStats().live).toBe(0);
+    });
+
+    it("keeps a leased runtime that is idle past its TTL but not yet stale", async () => {
+      vi.useFakeTimers();
+      const manager = createManager(vi.fn<CreateSessionMcpRuntime>(createRuntimeFixture));
+      const runtime = await manager.getOrCreate(leasedParams);
+      runtime.acquireLease?.();
+
+      vi.advanceTimersByTime(ttlMs + 1_000);
+      await manager.sweepIdleRuntimes();
+
+      expect(runtime.dispose).not.toHaveBeenCalled();
+      expect(manager.peekSession({ sessionId: params.sessionId })).toBe(runtime);
+    });
+
+    it("reports slot stats so the cap is observable before it is reached", async () => {
+      const manager = createManager(vi.fn<CreateSessionMcpRuntime>(createRuntimeFixture));
+      await manager.getOrCreate(leasedParams);
+      const stats = manager.readLiveRuntimeSlotStats();
+      expect(stats.max).toBe(SESSION_MCP_MAX_LIVE_RUNTIMES);
+      expect(stats.live).toBe(1);
+      expect(stats.runtimes).toBe(1);
+      expect(stats.orphaned).toBe(0);
     });
   });
 });

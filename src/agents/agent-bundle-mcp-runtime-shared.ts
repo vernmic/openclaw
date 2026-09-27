@@ -14,6 +14,31 @@ export const SESSION_MCP_RUNTIME_MANAGER_KEY = Symbol.for("openclaw.sessionMcpRu
 export const SESSION_MCP_RUNTIME_SWEEP_INTERVAL_MS = 60 * 1000;
 // Includes runtimes being created or drained; existing sessions never evict for capacity.
 export const SESSION_MCP_MAX_LIVE_RUNTIMES = 256;
+/**
+ * How long a live slot may be owned by NO runtime before the sweep reclaims it.
+ *
+ * `liveRuntimeSlots` is a strong Set of slot objects while `runtimeSlots` is a WeakMap keyed by
+ * runtime, so a runtime that leaves `runtimesBySessionId` without releasing its slot strands that
+ * slot permanently: nothing can reach it, the sweep never iterates it, and it counts against the
+ * cap for the life of the process. Observed 2026-09-27: a 48-hour-old gateway held all 256 slots
+ * with zero MCP child processes alive, and every agent turn failed at the cap until the process was
+ * replaced.
+ *
+ * A grace is required because `reserveRuntimeSlot` adds the slot BEFORE the runtime is registered
+ * (the cap deliberately counts runtimes "being created or drained"), so a momentarily unowned slot
+ * is normal. Several sweep intervals of continuous orphanhood is not.
+ */
+export const SESSION_MCP_ORPHAN_SLOT_GRACE_MS = 5 * 60 * 1000;
+/**
+ * Extra idleness, beyond a runtime's own TTL, after which the sweep stops honouring
+ * `activeLeases > 0` or an outstanding work chain and evicts anyway.
+ *
+ * Both skips are unbounded as written, so any path that takes a lease (or leaves a work-chain
+ * entry) and then dies pins its runtime for the life of the process. `lastUsedAt` is the honest
+ * signal: a genuinely busy runtime keeps touching it, so a runtime idle this far past its TTL is
+ * held by a lease whose owner is gone.
+ */
+export const SESSION_MCP_PIN_STALE_MS = 30 * 60 * 1000;
 
 /** Idle eviction is opt-in; zero retains the session lifetime. */
 export function resolveSessionMcpRuntimeIdleTtlMs(cfg?: OpenClawConfig): number {
