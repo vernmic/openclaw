@@ -138,16 +138,27 @@ function scopedCatalogToolsSignature(tools: readonly McpCatalogTool[]): string {
 
 /**
  * Names the sessions holding the most live runtime slots, so a cap hit reads in minutes instead
- * of a two-day investigation. Slots shared by replacement runtimes count once per session,
- * mirroring the ownership logic in `readLiveRuntimeSlotStats`.
+ * of a two-day investigation.
+ *
+ * The census leads because it is what separates the two failure modes. A runaway session shows a
+ * large `xN` in the holder list; a reclaim shortfall shows a large orphan count behind
+ * unremarkable holders. Reporting only the holders makes the mixed case actively misleading - 200
+ * stranded slots beside 56 owned ones reads as "nobody is holding much", which points the
+ * investigation away from the cause precisely when it is most needed.
+ *
+ * Slots shared by replacement runtimes count once per session. The orphan count matches what
+ * `readLiveRuntimeSlotStats` derives - live slots that no runtime owns - though this pass filters
+ * to live slots up front, because only those count against the cap.
  */
 function describeLiveRuntimeSlotHolders(store: SessionMcpRuntimeManagerStore): string {
   const liveSlotsBySession = new Map<string, Set<SessionMcpRuntimeSlot>>();
+  const ownedLiveSlots = new Set<SessionMcpRuntimeSlot>();
   for (const runtime of store.runtimesBySessionId.values()) {
     const slot = store.runtimeSlots.get(runtime);
     if (!slot || !store.liveRuntimeSlots.has(slot)) {
       continue;
     }
+    ownedLiveSlots.add(slot);
     const session = runtime.sessionKey ?? runtime.sessionId;
     const held = liveSlotsBySession.get(session);
     if (held) {
@@ -156,15 +167,18 @@ function describeLiveRuntimeSlotHolders(store: SessionMcpRuntimeManagerStore): s
       liveSlotsBySession.set(session, new Set([slot]));
     }
   }
+  const live = store.liveRuntimeSlots.size;
+  const owned = ownedLiveSlots.size;
+  const census = `; ${live} live (${live - owned} orphaned, ${owned} owned by ${liveSlotsBySession.size} session(s))`;
   if (liveSlotsBySession.size === 0) {
-    return "; no runtime owns a live slot (all orphaned)";
+    return `${census}; no runtime owns a live slot (all orphaned)`;
   }
   const top = [...liveSlotsBySession.entries()]
     .sort((a, b) => b[1].size - a[1].size || a[0].localeCompare(b[0]))
     .slice(0, 3)
     .map(([session, held]) => `${session} x${held.size}`)
     .join(", ");
-  return `; top live-slot holders: ${top}`;
+  return `${census}; top live-slot holders: ${top}`;
 }
 
 export function createSessionMcpRuntimeManagerLifecycle(store: SessionMcpRuntimeManagerStore) {

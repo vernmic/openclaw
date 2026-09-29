@@ -621,6 +621,22 @@ describe("MCP manager creation ownership", () => {
       );
     });
 
+    it("leads the cap error with a live/orphaned census", async () => {
+      // Holders alone cannot separate a runaway session from a reclaim shortfall: 200 stranded
+      // slots beside 56 owned ones would print small per-session counts and read as "nobody is
+      // holding much". The census is what makes the orphaned share visible.
+      const manager = createManager(createRuntimeFixture);
+      const configured = { mcp: { servers: { fixture: { command: "true" } } } };
+      const hold = (sessionId: string, sessionKey: string) =>
+        manager.getOrCreate({ ...params, sessionId, sessionKey, cfg: configured });
+      for (let index = 0; index < 256; index += 1) {
+        await hold(`census-${index}`, `agent:test:census-${index % 4}`);
+      }
+      await expect(hold("overflow", "agent:test:overflow")).rejects.toThrow(
+        "; 256 live (0 orphaned, 256 owned by 4 session(s)); top live-slot holders:",
+      );
+    });
+
     it("reports slot stats so the cap is observable before it is reached", async () => {
       const manager = createManager(vi.fn<CreateSessionMcpRuntime>(createRuntimeFixture));
       await manager.getOrCreate(leasedParams);
