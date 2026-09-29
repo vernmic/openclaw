@@ -136,6 +136,37 @@ function scopedCatalogToolsSignature(tools: readonly McpCatalogTool[]): string {
   );
 }
 
+/**
+ * Names the sessions holding the most live runtime slots, so a cap hit reads in minutes instead
+ * of a two-day investigation. Slots shared by replacement runtimes count once per session,
+ * mirroring the ownership logic in `readLiveRuntimeSlotStats`.
+ */
+function describeLiveRuntimeSlotHolders(store: SessionMcpRuntimeManagerStore): string {
+  const liveSlotsBySession = new Map<string, Set<SessionMcpRuntimeSlot>>();
+  for (const runtime of store.runtimesBySessionId.values()) {
+    const slot = store.runtimeSlots.get(runtime);
+    if (!slot || !store.liveRuntimeSlots.has(slot)) {
+      continue;
+    }
+    const session = runtime.sessionKey ?? runtime.sessionId;
+    const held = liveSlotsBySession.get(session);
+    if (held) {
+      held.add(slot);
+    } else {
+      liveSlotsBySession.set(session, new Set([slot]));
+    }
+  }
+  if (liveSlotsBySession.size === 0) {
+    return "; no runtime owns a live slot (all orphaned)";
+  }
+  const top = [...liveSlotsBySession.entries()]
+    .sort((a, b) => b[1].size - a[1].size || a[0].localeCompare(b[0]))
+    .slice(0, 3)
+    .map(([session, held]) => `${session} x${held.size}`)
+    .join(", ");
+  return `; top live-slot holders: ${top}`;
+}
+
 export function createSessionMcpRuntimeManagerLifecycle(store: SessionMcpRuntimeManagerStore) {
   const reserveRuntimeSlot = (
     existing: SessionMcpRuntime | undefined,
@@ -146,7 +177,7 @@ export function createSessionMcpRuntimeManagerLifecycle(store: SessionMcpRuntime
       return slot;
     }
     if (store.liveRuntimeSlots.size >= SESSION_MCP_MAX_LIVE_RUNTIMES) {
-      const message = `bundle-mcp: live runtime limit (${SESSION_MCP_MAX_LIVE_RUNTIMES}) reached; stop or reset unused sessions before connecting another MCP runtime`;
+      const message = `bundle-mcp: live runtime limit (${SESSION_MCP_MAX_LIVE_RUNTIMES}) reached; stop or reset unused sessions before connecting another MCP runtime${describeLiveRuntimeSlotHolders(store)}`;
       logWarn(message);
       throw new Error(message);
     }

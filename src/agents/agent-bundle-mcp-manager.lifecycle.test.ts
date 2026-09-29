@@ -602,6 +602,25 @@ describe("MCP manager creation ownership", () => {
       expect(manager.peekSession({ sessionId: params.sessionId })).toBe(runtime);
     });
 
+    it("names the top live-slot holder sessions when the limit is hit", async () => {
+      const manager = createManager(createRuntimeFixture);
+      const configured = { mcp: { servers: { fixture: { command: "true" } } } };
+      const hold = (sessionId: string, sessionKey: string) =>
+        manager.getOrCreate({ ...params, sessionId, sessionKey, cfg: configured });
+      for (let index = 0; index < 200; index += 1) {
+        await hold(`hog-a-${index}`, "agent:test:slot-hog-a");
+      }
+      for (let index = 0; index < 56; index += 1) {
+        await hold(`hog-b-${index}`, "agent:test:slot-hog-b");
+      }
+      await expect(hold("overflow", "agent:test:overflow")).rejects.toThrow(
+        "; top live-slot holders: agent:test:slot-hog-a x200, agent:test:slot-hog-b x56",
+      );
+      await expect(hold("overflow", "agent:test:overflow")).rejects.toThrow(
+        "live runtime limit (256)",
+      );
+    });
+
     it("reports slot stats so the cap is observable before it is reached", async () => {
       const manager = createManager(vi.fn<CreateSessionMcpRuntime>(createRuntimeFixture));
       await manager.getOrCreate(leasedParams);
