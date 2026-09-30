@@ -29,16 +29,10 @@ export const SESSION_MCP_MAX_LIVE_RUNTIMES = 256;
  * is normal. Several sweep intervals of continuous orphanhood is not.
  */
 export const SESSION_MCP_ORPHAN_SLOT_GRACE_MS = 5 * 60 * 1000;
-/**
- * Extra idleness, beyond a runtime's own TTL, after which the sweep stops honouring
- * `activeLeases > 0` or an outstanding work chain and evicts anyway.
- *
- * Both skips are unbounded as written, so any path that takes a lease (or leaves a work-chain
- * entry) and then dies pins its runtime for the life of the process. `lastUsedAt` is the honest
- * signal: a genuinely busy runtime keeps touching it, so a runtime idle this far past its TTL is
- * held by a lease whose owner is gone.
- */
-export const SESSION_MCP_PIN_STALE_MS = 30 * 60 * 1000;
+// A companion SESSION_MCP_PIN_STALE_MS lived here from 2026-09-27 to 2026-09-30: an idle ceiling
+// past which the sweep evicted runtimes that still held a lease or a work chain. It was removed
+// because idleness is not evidence that a holder is gone - see the DIRECTIVE in
+// agent-bundle-mcp-manager-lifecycle.ts's sweepIdleRuntimes before reintroducing anything like it.
 
 /** Idle eviction is opt-in; zero retains the session lifetime. */
 export function resolveSessionMcpRuntimeIdleTtlMs(cfg?: OpenClawConfig): number {

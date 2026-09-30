@@ -5,7 +5,6 @@ import { sessionMcpRuntimeOwners } from "./agent-bundle-mcp-runtime-owner.js";
 import {
   SESSION_MCP_MAX_LIVE_RUNTIMES,
   SESSION_MCP_ORPHAN_SLOT_GRACE_MS,
-  SESSION_MCP_PIN_STALE_MS,
   SESSION_MCP_RUNTIME_SWEEP_INTERVAL_MS,
   type CreateSessionMcpRuntime,
 } from "./agent-bundle-mcp-runtime-shared.js";
@@ -370,24 +369,28 @@ export function createSessionMcpRuntimeManagerLifecycle(store: SessionMcpRuntime
       if (idleForMs < idleTtlMs) {
         continue;
       }
-      // A lease or an outstanding work chain normally protects a runtime, but honouring either
-      // without bound lets one abandoned lease pin a slot for the life of the process (2026-09-27:
-      // the cap was reached with no MCP child alive to justify it). lastUsedAt is the honest signal
-      // - a busy runtime keeps touching it - so past this ceiling the holder is gone, not working.
-      const pinStale = idleForMs >= idleTtlMs + SESSION_MCP_PIN_STALE_MS;
-      const leased = (runtime.activeLeases ?? 0) > 0;
-      // Acquisition runs outside the runtime lease. Keep its current
-      // transport until the chain records the refreshed runtime.
-      const chained = store.runtimeWorkChains.has(runtimeKey);
-      if ((leased || chained) && !pinStale) {
+      // A lease or an outstanding work chain protects a runtime with no staleness ceiling, and
+      // must keep doing so. Acquisition runs outside the runtime lease, so the chain keeps its
+      // current transport until the chain records the refreshed runtime.
+      //
+      // DIRECTIVE: do not add an idle ceiling here. 2026-09-27 added one on the theory that
+      // `lastUsedAt` evidences holder liveness - "a busy runtime keeps touching it". That is
+      // false. `lastUsedAt` measures MCP-runtime idleness, not holder liveness: a session holding
+      // a lease through forty minutes of non-MCP work (file edits, shell, provider calls) is
+      // indistinguishable from an abandoned lease. On 2026-09-29 the ceiling fired 4 times, every
+      // one at activeLeases=1, three of them on one session whose work was still live - removing
+      // the runtime and its work-chain entry from under it. That session lost an output, retried,
+      // and wrote a duplicate; a later reply was generated three times.
+      //
+      // The ceiling was also not what fixed the 2026-09-27 exhaustion. That was the orphaned-slot
+      // class, which reclaimOrphanedRuntimeSlots below is the only thing that can find: 210
+      // reclaims against those 4 pinned evictions over the same window.
+      //
+      // An abandoned lease can still pin one runtime for the life of the process. Bounding that
+      // safely needs positive evidence the holder is gone - an in-flight-run check - never a
+      // longer idle timer, which only makes the same misclassification rarer and harder to trace.
+      if ((runtime.activeLeases ?? 0) > 0 || store.runtimeWorkChains.has(runtimeKey)) {
         continue;
-      }
-      if (leased || chained) {
-        logWarn(
-          `bundle-mcp: evicting pinned MCP runtime ${runtimeKey} after ${Math.round(idleForMs / 1000)}s idle ` +
-            `(activeLeases=${runtime.activeLeases ?? 0} workChain=${chained}); its holder did not release it`,
-        );
-        store.runtimeWorkChains.delete(runtimeKey);
       }
       store.runtimesBySessionId.delete(runtimeKey);
       store.connectionMetaByRuntimeKey.delete(runtimeKey);

@@ -7,7 +7,6 @@ import { createSessionMcpRuntimeManager } from "./agent-bundle-mcp-manager.test-
 import type { SessionMcpRuntimeManager } from "./agent-bundle-mcp-manager.test-support.js";
 import {
   SESSION_MCP_MAX_LIVE_RUNTIMES,
-  SESSION_MCP_PIN_STALE_MS,
   SESSION_MCP_RUNTIME_SWEEP_INTERVAL_MS,
   type CreateSessionMcpRuntime,
 } from "./agent-bundle-mcp-runtime-shared.js";
@@ -573,20 +572,21 @@ describe("MCP manager creation ownership", () => {
       vi.useRealTimers();
     });
 
-    it("evicts a leased runtime once it is idle far past its TTL", async () => {
+    it("never evicts a leased runtime, however long it sits idle", async () => {
+      // 2026-09-30 regression: an idle ceiling here evicted runtimes whose holders were alive but
+      // doing non-MCP work, taking the transport out from under live turns. Lost outputs, retries,
+      // and duplicated user-visible work followed. Idleness is not evidence the holder is gone.
       vi.useFakeTimers();
       const manager = createManager(vi.fn<CreateSessionMcpRuntime>(createRuntimeFixture));
       const runtime = await manager.getOrCreate(leasedParams);
-      // An owner that took a lease and died without releasing it.
       runtime.acquireLease?.();
       expect(runtime.activeLeases).toBe(1);
 
-      vi.advanceTimersByTime(ttlMs + SESSION_MCP_PIN_STALE_MS + 1_000);
+      vi.advanceTimersByTime(ttlMs + 6 * 60 * 60 * 1000);
       await manager.sweepIdleRuntimes();
 
-      expect(runtime.dispose).toHaveBeenCalled();
-      expect(manager.peekSession({ sessionId: params.sessionId })).toBeUndefined();
-      expect(manager.readLiveRuntimeSlotStats().live).toBe(0);
+      expect(runtime.dispose).not.toHaveBeenCalled();
+      expect(manager.peekSession({ sessionId: params.sessionId })).toBe(runtime);
     });
 
     it("keeps a leased runtime that is idle past its TTL but not yet stale", async () => {
