@@ -6,8 +6,12 @@ import { ensureReclamationLedgerSchema } from "./openclaw-agent-reclamation-ledg
 
 export const RECLAMATION_LEDGER_TABLE = "reclamation_ledger";
 
-/** The terminal cursor value: step 5 COMPLETE. */
-export const RECLAMATION_FINAL_STEP_CURSOR = 5;
+/**
+ * The terminal cursor value: phase 4 COMPLETE. The conditional watermark step that once
+ * occupied a fifth cursor is withdrawn (Claude's 2026-10-01 ruling), so the four phases
+ * land on cursors 1..4.
+ */
+export const RECLAMATION_FINAL_STEP_CURSOR = 4;
 
 /** Terminal states never re-enter the pull; the queue ignores them forever. */
 export const TERMINAL_RECLAMATION_LEDGER_STATES = ["done", "failed", "declined"] as const;
