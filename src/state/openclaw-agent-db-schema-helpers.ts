@@ -43,6 +43,7 @@ import {
   AGENT_PROGRESS_CARD_SCHEMA_SQL,
   SESSION_PROGRESS_CARDS_TABLE,
 } from "./openclaw-agent-progress-card-schema.js";
+import { RECLAMATION_LEDGER_TABLE } from "./openclaw-agent-reclamation-ledger-schema.js";
 import { OPENCLAW_AGENT_SCHEMA_SQL } from "./openclaw-agent-schema.js";
 import { SESSION_PARTICIPANTS_TABLE } from "./openclaw-agent-session-participants-schema.js";
 import {
@@ -85,6 +86,7 @@ const AGENT_SCHEMA_COMPATIBILITY = {
     SESSION_PARTICIPANTS_TABLE,
     SESSION_PROGRESS_CARDS_TABLE,
     SESSION_TRANSCRIPT_ARCHIVES_TABLE,
+    RECLAMATION_LEDGER_TABLE,
     STANDING_INTENTS_TABLE,
     STANDING_INTENTS_FTS_TABLE,
     ...STANDING_INTENTS_FTS_SHADOW_TABLES,

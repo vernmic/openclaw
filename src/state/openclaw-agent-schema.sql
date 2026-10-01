@@ -433,6 +433,21 @@ CREATE TABLE IF NOT EXISTS transcript_rewrite_watermarks (
   FOREIGN KEY (session_id) REFERENCES "session_windows"(session_id) ON DELETE CASCADE
 ) STRICT;
 
+CREATE TABLE IF NOT EXISTS reclamation_ledger (
+  id INTEGER PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  generation TEXT NOT NULL,
+  plan_json TEXT NOT NULL,
+  step_cursor INTEGER NOT NULL DEFAULT 0 CHECK (step_cursor >= 0 AND step_cursor <= 5),
+  attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+  state TEXT NOT NULL DEFAULT 'queued' CHECK (state IN ('queued', 'running', 'done', 'failed', 'declined')),
+  session_fully_deleted INTEGER NOT NULL DEFAULT 0 CHECK (session_fully_deleted IN (0, 1)),
+  last_error TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE(session_id, generation)
+) STRICT;
+
 CREATE TABLE IF NOT EXISTS trajectory_runtime_events (
   session_id TEXT NOT NULL,
   seq INTEGER NOT NULL,

@@ -222,6 +222,20 @@ export interface MessageToolRunOutcomes {
   session_key: string;
 }
 
+export interface ReclamationLedger {
+  attempts: Generated<number>;
+  created_at: number;
+  generation: string;
+  id: Generated<number>;
+  last_error: string | null;
+  plan_json: string;
+  session_fully_deleted: Generated<number>;
+  session_id: string;
+  state: Generated<string>;
+  step_cursor: Generated<number>;
+  updated_at: number;
+}
+
 export interface SchemaMeta {
   agent_id: string | null;
   app_version: string | null;
@@ -539,6 +553,7 @@ export interface DB {
   memory_index_state: MemoryIndexState;
   memory_session_tombstones: MemorySessionTombstones;
   message_tool_run_outcomes: MessageToolRunOutcomes;
+  reclamation_ledger: ReclamationLedger;
   schema_meta: SchemaMeta;
   session_conversations: SessionConversations;
   session_goal_operations: SessionGoalOperations;
