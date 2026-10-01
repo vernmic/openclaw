@@ -444,9 +444,20 @@ CREATE TABLE IF NOT EXISTS reclamation_ledger (
   session_fully_deleted INTEGER NOT NULL DEFAULT 0 CHECK (session_fully_deleted IN (0, 1)),
   last_error TEXT,
   created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL,
-  UNIQUE(session_id, generation)
+  updated_at INTEGER NOT NULL
 ) STRICT;
+
+-- At most one LIVE entry per (session, generation): `state` describes one session's progress, so a
+-- re-plan after a terminal outcome is a fresh row (append-only history), never a revival.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_reclamation_ledger_live
+  ON reclamation_ledger(session_id, generation)
+  WHERE state NOT IN ('done', 'failed', 'declined');
+
+-- Keeps the live-candidate pull O(live) as terminal rows accumulate: the pull filters terminal
+-- states and orders by created_at/id, which this partial index serves directly.
+CREATE INDEX IF NOT EXISTS idx_agent_reclamation_ledger_pull
+  ON reclamation_ledger(created_at, id)
+  WHERE state NOT IN ('done', 'failed', 'declined');
 
 CREATE TABLE IF NOT EXISTS trajectory_runtime_events (
   session_id TEXT NOT NULL,

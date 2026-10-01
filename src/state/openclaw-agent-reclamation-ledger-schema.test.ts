@@ -99,18 +99,53 @@ describe("reclamation ledger schema", () => {
     ).toEqual(metadataBefore);
   });
 
-  it("enforces the (session_id, generation) uniqueness and the state check", () => {
+  it("enforces live-entry uniqueness while terminal rows accumulate as history", () => {
     const database = new DatabaseSync(":memory:");
     try {
       database.exec(OPENCLAW_AGENT_SCHEMA_SQL);
       ensureReclamationLedgerSchema(database);
 
       insertLedgerRow(database);
+      // A second LIVE row for the pair collides with the partial unique index.
       expect(() => insertLedgerRow(database)).toThrow(/UNIQUE/i);
+
+      // Once the first entry is terminal, a re-plan of the same (session, generation) inserts a
+      // fresh live row -- the ruling's append-only retry path (Claude's acceptance test 7).
+      database
+        .prepare(`UPDATE ${RECLAMATION_LEDGER_TABLE} SET state = 'failed' WHERE state = 'queued'`)
+        .run();
+      expect(() => insertLedgerRow(database)).not.toThrow();
+
+      expect(
+        database
+          .prepare(
+            `SELECT COUNT(*) AS n FROM ${RECLAMATION_LEDGER_TABLE} WHERE session_id = 'session-1'`,
+          )
+          .get(),
+      ).toEqual({ n: 2 });
 
       expect(() => insertLedgerRow(database, { generation: "other", state: "bogus" })).toThrow(
         /CHECK/i,
       );
+    } finally {
+      database.close();
+    }
+  });
+
+  it("installs the partial live-uniqueness and pull indexes alongside the table", () => {
+    const database = new DatabaseSync(":memory:");
+    try {
+      database.exec(OPENCLAW_AGENT_SCHEMA_SQL);
+      ensureReclamationLedgerSchema(database);
+
+      const names = new Set(
+        database
+          .prepare("SELECT name FROM sqlite_schema WHERE type = 'index'")
+          .all()
+          .map((row) => String((row as { name: string }).name)),
+      );
+      expect(names.has("idx_agent_reclamation_ledger_live")).toBe(true);
+      expect(names.has("idx_agent_reclamation_ledger_pull")).toBe(true);
     } finally {
       database.close();
     }

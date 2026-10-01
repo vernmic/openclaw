@@ -1,6 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { sql as kyselySql } from "kysely";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
+import { runSqliteImmediateTransactionSync } from "../infra/sqlite-transaction.js";
 import type { DB as OpenClawAgentKyselyDatabase } from "./openclaw-agent-db.generated.js";
 import { ensureReclamationLedgerSchema } from "./openclaw-agent-reclamation-ledger-schema.js";
 
@@ -60,16 +61,24 @@ function toLedgerEntry(row: {
   };
 }
 
+export type ReclamationLedgerEnqueue = {
+  generation: string;
+  planJson: string;
+  sessionId: string;
+};
+
 /**
- * Enqueues one ledger entry. Re-planning a session MUST pass the generation already
- * recorded for that session; the UNIQUE(session_id, generation) key then makes the
- * insert a no-op and duplicate archives impossible by construction.
+ * Inserts one ledger row. Dedup is per (session, generation) among LIVE entries only (the partial
+ * index `idx_agent_reclamation_ledger_live`), so re-enqueueing a session already in flight is a
+ * no-op while a re-plan after a terminal outcome inserts a fresh row -- terminal rows accumulate as
+ * append-only history (Claude's 2026-10-01 enqueue/re-plan ruling). The conflict target is
+ * deliberately omitted: a targetless `ON CONFLICT DO NOTHING` is the only form SQLite accepts
+ * against a partial index, and the ledger's sole unique constraint is that index.
  */
-export function enqueueReclamationLedgerEntry(
+function insertReclamationLedgerEntry(
   database: DatabaseSync,
   params: { generation: string; now: number; planJson: string; sessionId: string },
 ): { id: number; inserted: boolean } {
-  ensureReclamationLedgerSchema(database);
   const db = ledgerDb(database);
   const inserted = executeSqliteQuerySync(
     database,
@@ -82,15 +91,18 @@ export function enqueueReclamationLedgerEntry(
         session_id: params.sessionId,
         updated_at: params.now,
       })
-      .onConflict((conflict) => conflict.columns(["session_id", "generation"]).doNothing()),
+      .onConflict((conflict) => conflict.doNothing()),
   );
+  // The partial index guarantees at most one LIVE row for the pair, so this read is deterministic:
+  // it is either the row just inserted or the in-flight row that blocked the insert.
   const row = executeSqliteQuerySync(
     database,
     db
       .selectFrom(RECLAMATION_LEDGER_TABLE)
       .select("id")
       .where("session_id", "=", params.sessionId)
-      .where("generation", "=", params.generation),
+      .where("generation", "=", params.generation)
+      .where("state", "not in", [...TERMINAL_RECLAMATION_LEDGER_STATES]),
   ).rows[0];
   if (!row) {
     throw new Error("Reclamation ledger enqueue lost its entry");
@@ -98,7 +110,39 @@ export function enqueueReclamationLedgerEntry(
   return { id: row.id, inserted: Number(inserted.numAffectedRows ?? 0n) === 1 };
 }
 
-/** Reuses the generation already recorded for a session, or mints nothing and returns undefined. */
+/** Enqueues one ledger entry. */
+export function enqueueReclamationLedgerEntry(
+  database: DatabaseSync,
+  params: { generation: string; now: number; planJson: string; sessionId: string },
+): { id: number; inserted: boolean } {
+  ensureReclamationLedgerSchema(database);
+  return insertReclamationLedgerEntry(database, params);
+}
+
+/**
+ * Fan-out enqueue: one per-session entry per reclaimed session, all-or-nothing in a single
+ * transaction (Claude's 2026-10-01 ruling item 1). A crash mid-fan-out would otherwise queue only
+ * part of the set, and nothing in the queue would know the set was incomplete.
+ */
+export function enqueueReclamationLedgerEntries(
+  database: DatabaseSync,
+  params: { entries: ReadonlyArray<ReclamationLedgerEnqueue>; now: number },
+): Array<{ id: number; inserted: boolean }> {
+  ensureReclamationLedgerSchema(database);
+  return runSqliteImmediateTransactionSync(database, () =>
+    params.entries.map((entry) =>
+      insertReclamationLedgerEntry(database, { ...entry, now: params.now }),
+    ),
+  );
+}
+
+/**
+ * Returns the generation most recently recorded for a session, or undefined. Terminal rows are
+ * append-only, so a session may now hold several ledger rows; the newest row carries the most
+ * recent generation observed for it (reclamation never rotates the generation -- only a transcript
+ * rewrite does, and that always moves it forward). This drops the old single-row-per-pair
+ * assumption (Claude's 2026-10-01 enqueue/re-plan ruling).
+ */
 export function findReclamationLedgerGeneration(
   database: DatabaseSync,
   sessionId: string,
@@ -111,8 +155,8 @@ export function findReclamationLedgerGeneration(
       .selectFrom(RECLAMATION_LEDGER_TABLE)
       .select("generation")
       .where("session_id", "=", sessionId)
-      .orderBy("created_at", "asc")
-      .orderBy("id", "asc")
+      .orderBy("created_at", "desc")
+      .orderBy("id", "desc")
       .limit(1),
   ).rows[0]?.generation;
 }

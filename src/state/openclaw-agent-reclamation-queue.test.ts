@@ -7,6 +7,7 @@ import {
   completeReclamationLedgerEntry,
   createReclamationLedgerRunner,
   declineReclamationLedgerEntry,
+  enqueueReclamationLedgerEntries,
   enqueueReclamationLedgerEntry,
   failReclamationLedgerEntry,
   findReclamationLedgerGeneration,
@@ -196,6 +197,92 @@ describe("reclamation ledger queue", () => {
       });
       expect(readReclamationLedgerEntry(database, failed.id)?.lastError).toContain("boom");
       expect(readReclamationLedgerEntry(database, declined.id)?.state).toBe("declined");
+    } finally {
+      database.close();
+    }
+  });
+
+  it("re-plans a session after a terminal outcome as a fresh live entry", () => {
+    const database = openLedgerDatabase();
+    try {
+      const first = enqueue(database);
+      failReclamationLedgerEntry(database, {
+        error: new Error("transient"),
+        id: first.id,
+        now: 2_000,
+      });
+
+      // The session is still live with an unchanged generation. The old table-level
+      // UNIQUE(session_id, generation) would have silently dropped this insert (acceptance
+      // test 7); the partial live index admits it as an append-only retry.
+      const replan = enqueue(database, { now: 3_000 });
+      expect(replan.inserted).toBe(true);
+      expect(replan.id).not.toBe(first.id);
+      expect(readReclamationLedgerEntry(database, first.id)?.state).toBe("failed");
+      expect(readReclamationLedgerEntry(database, replan.id)?.state).toBe("queued");
+
+      // Re-enqueueing the same pair while it is live is still a no-op.
+      const again = enqueue(database, { now: 3_100 });
+      expect(again.inserted).toBe(false);
+      expect(again.id).toBe(replan.id);
+      expect(hasClaimableReclamationLedgerEntry(database)).toBe(true);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("reports the newest generation once a session holds terminal history", () => {
+    const database = openLedgerDatabase();
+    try {
+      const first = enqueue(database, { generation: "1".repeat(32), now: 1_000 });
+      completeReclamationLedgerEntry(database, {
+        id: first.id,
+        now: 2_000,
+        sessionFullyDeleted: true,
+      });
+      enqueue(database, { generation: "2".repeat(32), now: 3_000 });
+
+      // Two rows for one session, and the newest carries the generation now in play.
+      expect(findReclamationLedgerGeneration(database, "session-1")).toBe("2".repeat(32));
+    } finally {
+      database.close();
+    }
+  });
+
+  it("fans out per-session entries atomically, all or nothing", () => {
+    const database = openLedgerDatabase();
+    try {
+      const results = enqueueReclamationLedgerEntries(database, {
+        now: 5_000,
+        entries: [
+          { generation: GENERATION, planJson: "{}", sessionId: "fan-1" },
+          { generation: GENERATION, planJson: "{}", sessionId: "fan-2" },
+          { generation: GENERATION, planJson: "{}", sessionId: "fan-3" },
+        ],
+      });
+      expect(results.map((entry) => entry.inserted)).toEqual([true, true, true]);
+      expect(hasClaimableReclamationLedgerEntry(database)).toBe(true);
+
+      // A failed row in the batch rolls the whole fan-out back: the first insert must not
+      // survive on its own, or a crash mid-fan-out would queue only part of the set.
+      expect(() =>
+        enqueueReclamationLedgerEntries(database, {
+          now: 6_000,
+          entries: [
+            { generation: "3".repeat(32), planJson: "{}", sessionId: "rollback-ok" },
+            {
+              generation: "4".repeat(32),
+              planJson: "{}",
+              sessionId: null as unknown as string,
+            },
+          ],
+        }),
+      ).toThrow();
+      expect(
+        database
+          .prepare("SELECT COUNT(*) AS n FROM reclamation_ledger WHERE session_id = 'rollback-ok'")
+          .get(),
+      ).toEqual({ n: 0 });
     } finally {
       database.close();
     }
