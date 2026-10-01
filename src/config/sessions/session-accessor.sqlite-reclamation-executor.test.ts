@@ -277,6 +277,47 @@ describe("reclamation ledger executor", () => {
     }
   });
 
+  it("maps a delete-transaction decline to a terminal decline and drops the archive", async () => {
+    const database = openLedgerDatabase();
+    try {
+      const claimed = enqueueAndClaim(database);
+      advanceReclamationLedgerStep(database, { id: claimed.id, now: 1_500, stepCursor: 2 });
+      const entry = readReclamationLedgerEntry(database, claimed.id);
+      if (!entry) {
+        throw new Error("expected the advanced entry");
+      }
+      const state: FakeState = {
+        calls: [],
+        deleteThrows: new ReclamationPhaseDeclinedError("target-guard"),
+      };
+
+      const result = await executeReclamationLedgerEntry({
+        createOperations: fakeOperations(state),
+        database,
+        entry,
+        now: counts(),
+      });
+
+      expect(result).toEqual({
+        kind: "declined",
+        phase: "batch-delete",
+        reason: "target-guard",
+      });
+      expect(state.calls).toEqual([
+        "guard:batch-delete",
+        "deleteReclaimedRows",
+        "removeArchiveForDecline",
+      ]);
+      expect(readReclamationLedgerEntry(database, entry.id)).toMatchObject({
+        lastError: "batch-delete:target-guard",
+        state: "declined",
+      });
+      expect(hasClaimableReclamationLedgerEntry(database)).toBe(false);
+    } finally {
+      database.close();
+    }
+  });
+
   it("yields a lost concurrent claim quietly instead of failing the entry", async () => {
     const database = openLedgerDatabase();
     try {

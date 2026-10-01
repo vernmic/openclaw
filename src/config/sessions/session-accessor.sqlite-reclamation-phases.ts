@@ -13,9 +13,11 @@
  * handed in is already scoped to one transaction; the runner only sequences them and encodes the
  * takeover-safety rules that make idempotent takeover (spec v2) safe:
  *
- *  - a guard decline at the head of the delete phase is the ONLY place the step-2 archive row is
- *    removed, and removeReclamationArchiveForDecline gates that removal on the cursor, so an
- *    archive that belongs to a committed delete is never removed;
+ *  - a decline at the head of the delete phase -- the guard-2 re-check, or the delete transaction's
+ *    own in-transaction fence (a moved snapshot or target mismatch, signalled by the distinct
+ *    ReclamationPhaseDeclinedError sentinel) -- removes the un-consumed step-2 archive row, and
+ *    removeReclamationArchiveForDecline gates that removal on the cursor, so an archive that
+ *    belongs to a committed delete is never removed;
  *  - a phase-2 snapshot decline -- materializeSessionStateDeletePlans re-checks the delete
  *    snapshot -- is a normal terminal declined, distinct from a sha256 conflict, which is terminal
  *    failed with NO delete (the invariant's last line of defence).
@@ -125,7 +127,25 @@ export async function runSqliteSessionReclamationPhase(params: {
         reason: guard.reason,
       };
     }
-    await operations.deleteReclaimedRows();
+    try {
+      await operations.deleteReclaimedRows();
+    } catch (error) {
+      // The delete transaction itself re-checks the fence (the check must stay inside the
+      // transaction; a pre-delete-only check has a TOCTOU window on the irreversible op) and
+      // signals a normal decline with the distinct ReclamationPhaseDeclinedError sentinel. Nothing
+      // was deleted, so the step-2 archive row is un-consumed garbage: drop it cursor-gated and
+      // decline. Any other error is a real failure and propagates.
+      if (error instanceof ReclamationPhaseDeclinedError) {
+        await operations.removeArchiveForDecline();
+        return {
+          cleanupArchive: true,
+          kind: "declined",
+          phase: "batch-delete",
+          reason: error.reason,
+        };
+      }
+      throw error;
+    }
     return {
       kind: "advanced",
       phase: "batch-delete",

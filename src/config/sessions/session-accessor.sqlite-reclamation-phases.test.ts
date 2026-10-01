@@ -8,7 +8,9 @@ import {
   runSqliteSessionReclamationPhase,
 } from "./session-accessor.sqlite-reclamation-phases.js";
 
-function fakeOperations(params: { appendThrows?: unknown; guard?: ReclamationGuardOutcome } = {}): {
+function fakeOperations(
+  params: { appendThrows?: unknown; deleteThrows?: unknown; guard?: ReclamationGuardOutcome } = {},
+): {
   calls: string[];
   operations: ReclamationPhaseOperations;
 } {
@@ -25,6 +27,9 @@ function fakeOperations(params: { appendThrows?: unknown; guard?: ReclamationGua
     },
     deleteReclaimedRows: () => {
       calls.push("deleteReclaimedRows");
+      if (params.deleteThrows !== undefined) {
+        throw params.deleteThrows;
+      }
     },
     evaluateGuard: () => {
       calls.push("guard");
@@ -119,6 +124,29 @@ describe("reclamation four-phase runner", () => {
       reason: "recent-activity",
     });
     expect(calls).toEqual(["guard", "removeArchiveForDecline"]);
+  });
+
+  it("declines when the delete transaction's own fence moves, and drops the archive", async () => {
+    const { calls, operations } = fakeOperations({
+      deleteThrows: new ReclamationPhaseDeclinedError("target-guard"),
+    });
+    await expect(runSqliteSessionReclamationPhase({ operations, stepCursor: 2 })).resolves.toEqual({
+      cleanupArchive: true,
+      kind: "declined",
+      phase: "batch-delete",
+      reason: "target-guard",
+    });
+    // The guard passed, the delete declined inside its transaction, so nothing was deleted and
+    // the un-consumed step-2 archive row is removed.
+    expect(calls).toEqual(["guard", "deleteReclaimedRows", "removeArchiveForDecline"]);
+  });
+
+  it("propagates a genuine delete failure instead of reading it as a decline", async () => {
+    const { calls, operations } = fakeOperations({ deleteThrows: new Error("disk exploded") });
+    await expect(runSqliteSessionReclamationPhase({ operations, stepCursor: 2 })).rejects.toThrow(
+      "disk exploded",
+    );
+    expect(calls).toEqual(["guard", "deleteReclaimedRows"]);
   });
 
   it("completes from the delete cursor without replaying earlier phases", async () => {
