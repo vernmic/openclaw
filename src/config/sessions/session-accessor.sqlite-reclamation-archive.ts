@@ -45,20 +45,33 @@ export class ReclamationArchiveConflictError extends Error {
   }
 }
 
+/**
+ * Reads the durable identity of an archive row: the stored sha256 and the stored blob's byte
+ * length. The length is what a sha256 column alone cannot settle -- a truncated or foreign blob
+ * carrying a matching digest must not pass as the plan's archive.
+ */
+export function readReclamationArchiveRecord(
+  database: OpenClawAgentDatabase,
+  params: { generation: string; sessionId: string },
+): { byteLength: number; sha256: string } | undefined {
+  ensureSessionTranscriptArchiveSchema(database.db);
+  const db = getSessionKysely(database.db);
+  const row = executeSqliteQueryTakeFirstSync(
+    database.db,
+    db
+      .selectFrom("session_transcript_archives")
+      .select(["archive_blob", "archive_sha256"])
+      .where("session_id", "=", params.sessionId)
+      .where("generation", "=", params.generation),
+  );
+  return row ? { byteLength: row.archive_blob.byteLength, sha256: row.archive_sha256 } : undefined;
+}
+
 export function readReclamationArchiveSha256(
   database: OpenClawAgentDatabase,
   params: { generation: string; sessionId: string },
 ): string | undefined {
-  ensureSessionTranscriptArchiveSchema(database.db);
-  const db = getSessionKysely(database.db);
-  return executeSqliteQueryTakeFirstSync(
-    database.db,
-    db
-      .selectFrom("session_transcript_archives")
-      .select("archive_sha256")
-      .where("session_id", "=", params.sessionId)
-      .where("generation", "=", params.generation),
-  )?.archive_sha256;
+  return readReclamationArchiveRecord(database, params)?.sha256;
 }
 
 /**
@@ -77,21 +90,29 @@ export function reconcileReclamationArchive(params: {
   if (!generation) {
     throw new Error(`Reclamation archive plan is missing a generation for ${plan.sessionId}`);
   }
-  const existing = readReclamationArchiveSha256(database, {
+  const archive = plan.archive;
+  if (!archive) {
+    throw new Error(`Reclamation archive bytes are missing for ${plan.sessionId}`);
+  }
+  const existing = readReclamationArchiveRecord(database, {
     generation,
     sessionId: plan.sessionId,
   });
   if (existing !== undefined) {
-    if (existing !== stored.sha256) {
+    if (existing.sha256 !== stored.sha256) {
       throw new ReclamationArchiveConflictError(
-        `Reclamation archive conflict for ${plan.sessionId}: stored ${existing} != planned ${stored.sha256}`,
+        `Reclamation archive conflict for ${plan.sessionId}: stored ${existing.sha256} != planned ${stored.sha256}`,
+      );
+    }
+    // A matching digest column cannot prove the stored blob is the planned archive: a truncated
+    // or foreign row carrying a copied digest would otherwise pass silently, and the delete would
+    // proceed against events this plan never archived. Compare the blob's byte length too.
+    if (existing.byteLength !== archive.bytes.byteLength) {
+      throw new ReclamationArchiveConflictError(
+        `Reclamation archive length mismatch for ${plan.sessionId}: stored ${existing.byteLength} bytes != planned ${archive.bytes.byteLength} bytes`,
       );
     }
     return "already-archived";
-  }
-  const archive = plan.archive;
-  if (!archive) {
-    throw new Error(`Reclamation archive bytes are missing for ${plan.sessionId}`);
   }
   const derived = hashSessionArchiveBytes(archive.bytes);
   if (derived !== stored.sha256) {

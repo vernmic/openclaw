@@ -164,6 +164,44 @@ describe("reclamation archive-append reconciliation", () => {
     }
   });
 
+  it("is terminal when an existing row's digest matches but its byte length does not", () => {
+    const database = openDatabase();
+    try {
+      const planned = new Uint8Array([5, 5, 5, 5]);
+      const stored = storedMetadata(planned);
+      // A foreign row: the digest column carries the planned value, but the stored blob is
+      // truncated. A sha256-only check would accept it and delete un-archived events.
+      database.db
+        .prepare(
+          "INSERT INTO session_transcript_archives (archive_blob, archive_name, archive_sha256, created_at, encoding, generation, reason, session_id, session_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .run(
+          new Uint8Array([5, 5]),
+          "stored-name.jsonl.zst",
+          stored.sha256,
+          stored.createdAt,
+          "zstd",
+          GENERATION,
+          "deleted",
+          SESSION_ID,
+          `key:${SESSION_ID}`,
+        );
+      expect(() =>
+        reconcileReclamationArchive({ database, plan: planWithBytes(planned), stored }),
+      ).toThrow(ReclamationArchiveConflictError);
+      // The foreign row is untouched: no overwrite, no delete.
+      const row = database.db
+        .prepare(
+          "SELECT archive_sha256, length(archive_blob) AS byte_length FROM session_transcript_archives WHERE session_id = ? AND generation = ?",
+        )
+        .get(SESSION_ID, GENERATION) as { archive_sha256: string; byte_length: number };
+      expect(row.archive_sha256).toBe(stored.sha256);
+      expect(row.byte_length).toBe(2);
+    } finally {
+      database.db.close();
+    }
+  });
+
   it("gates decline cleanup on the cursor so a delete-phase archive is never removed", () => {
     const database = openDatabase();
     try {
