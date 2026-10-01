@@ -113,18 +113,14 @@ export function findReclamationLedgerGeneration(
   ).rows[0]?.generation;
 }
 
-function selectClaimableEntry(database: DatabaseSync, excluded: readonly number[]) {
+function selectClaimableEntry(database: DatabaseSync) {
   const db = ledgerDb(database);
-  let query = db
-    .selectFrom(RECLAMATION_LEDGER_TABLE)
-    .selectAll()
-    .where("state", "not in", [...TERMINAL_RECLAMATION_LEDGER_STATES]);
-  if (excluded.length > 0) {
-    query = query.where("id", "not in", [...excluded]);
-  }
   return executeSqliteQuerySync(
     database,
-    query
+    db
+      .selectFrom(RECLAMATION_LEDGER_TABLE)
+      .selectAll()
+      .where("state", "not in", [...TERMINAL_RECLAMATION_LEDGER_STATES])
       /* kysely-allow-raw: in-progress-first pull order per the reclamation queue spec. */
       .orderBy(kyselySql`(step_cursor > 0 OR state = 'running') DESC`)
       .orderBy("created_at", "asc")
@@ -134,16 +130,18 @@ function selectClaimableEntry(database: DatabaseSync, excluded: readonly number[
 }
 
 /**
- * Atomically claims the next claimable entry: an UPDATE gated on state<>'running', so a
- * queued row elects exactly one concurrent winner and attempts increments once. A row a
- * runner already holds cannot be re-claimed; a claim that loses the race advances to the
- * next candidate instead of stalling the queue.
+ * Idempotent-takeover claim (spec v2, review addendum 2026-10-01 — option 2). The UPDATE is
+ * unconditional: a claim is a per-pull attempt, not ownership, so a row a crashed process left
+ * state='running' is claimable by the next runner and requirement 5 (resume at step) holds.
+ * Leases were rejected because lease expiry is timer-based liveness inference (idle != alive),
+ * the same anti-pattern that caused the 2026-09-29 eviction incident. Safety comes from step
+ * idempotency plus the four takeover-safety conditions, not from single ownership.
  *
- * KNOWN GAP (flagged for review): an entry left state='running' by a crashed process is
- * never re-claimed by this predicate, so requirement 5's "grab the interrupted entry and
- * resume at its step" is NOT satisfiable without distinguishing a dead holder from a live
- * one. That needs an owner+expiry (a lease) or a takeover rule, neither of which this
- * schema carries. Reported to Vern/Claude rather than worked around here.
+ * Two consequences, both intended:
+ * - Two runners sharing one DB (the normal stop/start deploy overlap) may BOTH claim the same
+ *   entry; the ledger reaches `done` exactly once because COMPLETE is idempotent.
+ * - `attempts` increments per pull, so a flapping restart inflates it. Nothing promotes a high
+ *   `attempts` count to `failed` on its own — the condition that makes this safe.
  */
 export function claimNextReclamationLedgerEntry(
   database: DatabaseSync,
@@ -151,34 +149,23 @@ export function claimNextReclamationLedgerEntry(
 ): ReclamationLedgerEntry | undefined {
   ensureReclamationLedgerSchema(database);
   const db = ledgerDb(database);
-  const excluded: number[] = [];
-  for (;;) {
-    const candidate = selectClaimableEntry(database, excluded);
-    if (!candidate) {
-      return undefined;
-    }
-    const claimed = executeSqliteQuerySync(
-      database,
-      db
-        .updateTable(RECLAMATION_LEDGER_TABLE)
-        .set({
-          /* kysely-allow-raw: atomic attempts increment, spec-mandated claim shape. */
-          attempts: kyselySql`attempts + 1`,
-          state: "running",
-          updated_at: params.now,
-        })
-        .where("id", "=", candidate.id)
-        .where("state", "<>", "running"),
-    );
-    if (Number(claimed.numAffectedRows ?? 0n) === 1) {
-      return toLedgerEntry({
-        ...candidate,
-        attempts: candidate.attempts + 1,
-        state: "running",
-      });
-    }
-    excluded.push(candidate.id);
+  const candidate = selectClaimableEntry(database);
+  if (!candidate) {
+    return undefined;
   }
+  executeSqliteQuerySync(
+    database,
+    db
+      .updateTable(RECLAMATION_LEDGER_TABLE)
+      .set({
+        /* kysely-allow-raw: per-pull attempts increment on the unconditional takeover claim. */
+        attempts: kyselySql`attempts + 1`,
+        state: "running",
+        updated_at: params.now,
+      })
+      .where("id", "=", candidate.id),
+  );
+  return toLedgerEntry({ ...candidate, attempts: candidate.attempts + 1, state: "running" });
 }
 
 /** True when a row matching the pull predicate exists; a cheap re-check for the runner stop step. */
@@ -197,7 +184,11 @@ export function hasClaimableReclamationLedgerEntry(database: DatabaseSync): bool
   );
 }
 
-/** Records a completed phase boundary. The cursor is committed only after the phase is durable. */
+/**
+ * Records a completed phase boundary. The cursor is committed only after the phase is durable,
+ * and it is MONOTONIC: a stale runner finishing a phase late can never move the cursor backwards
+ * past another runner's progress (takeover-safety condition 1).
+ */
 export function advanceReclamationLedgerStep(
   database: DatabaseSync,
   params: { id: number; now: number; stepCursor: number },
@@ -207,7 +198,12 @@ export function advanceReclamationLedgerStep(
     database,
     db
       .updateTable(RECLAMATION_LEDGER_TABLE)
-      .set({ last_error: null, step_cursor: params.stepCursor, updated_at: params.now })
+      .set({
+        last_error: null,
+        /* kysely-allow-raw: monotonic step cursor; a stale runner must not rewind progress. */
+        step_cursor: kyselySql`MAX(step_cursor, ${params.stepCursor})`,
+        updated_at: params.now,
+      })
       .where("id", "=", params.id),
   );
 }
@@ -264,6 +260,26 @@ export function declineReclamationLedgerEntry(
   );
 }
 
+/**
+ * Benign yield for a phase that lost a concurrent claim (takeover-safety condition 3). Under
+ * idempotent takeover the loser of a per-phase claim re-queues quietly, so the normal stop/start
+ * deploy overlap never records last_error or a failed count against a healthy entry. `attempts`
+ * is deliberately untouched — the takeover already counted its own pull.
+ */
+export function yieldReclamationLedgerEntry(
+  database: DatabaseSync,
+  params: { id: number; now: number },
+): void {
+  const db = ledgerDb(database);
+  executeSqliteQuerySync(
+    database,
+    db
+      .updateTable(RECLAMATION_LEDGER_TABLE)
+      .set({ state: "queued", updated_at: params.now })
+      .where("id", "=", params.id),
+  );
+}
+
 export function readReclamationLedgerEntry(
   database: DatabaseSync,
   id: number,
@@ -280,6 +296,8 @@ export function readReclamationLedgerEntry(
 export type ReclamationLedgerRunner = {
   isRunning: () => boolean;
   push: () => void;
+  /** Gateway-boot trigger: one pull, then shut down if the queue is empty. */
+  start: () => void;
   whenIdle: () => Promise<void>;
 };
 
@@ -340,13 +358,18 @@ export function createReclamationLedgerRunner(params: {
     void drainLoop();
   };
 
+  const ensureRunning = (): void => {
+    if (!running) {
+      startDrain();
+    }
+  };
+
   return {
     isRunning: () => running,
-    push: () => {
-      if (!running) {
-        startDrain();
-      }
-    },
+    // Gateway boot and any enqueue both funnel into the same guarded drain, so this costs one
+    // extra pull attempt per process lifetime and nothing when the queue is empty.
+    start: ensureRunning,
+    push: ensureRunning,
     whenIdle: () => {
       if (!running) {
         return Promise.resolve();

@@ -13,6 +13,7 @@ import {
   hasClaimableReclamationLedgerEntry,
   readReclamationLedgerEntry,
   type ReclamationLedgerEntry,
+  yieldReclamationLedgerEntry,
 } from "./openclaw-agent-reclamation-queue.js";
 import { OPENCLAW_AGENT_SCHEMA_SQL } from "./openclaw-agent-schema.js";
 
@@ -61,18 +62,26 @@ describe("reclamation ledger queue", () => {
     }
   });
 
-  it("claims atomically: exactly one of two concurrent claims wins and attempts increments once", () => {
+  it("idempotent takeover: both runners may claim one entry, which reaches done exactly once", () => {
     const database = openLedgerDatabase();
     try {
       const { id } = enqueue(database);
 
-      const winner = claimNextReclamationLedgerEntry(database, { now: 2_000 });
-      const loser = claimNextReclamationLedgerEntry(database, { now: 2_000 });
+      // Spec v2 / review addendum: the claim is unconditional, so the normal stop/start deploy
+      // overlap legitimately has both runners claim the same entry. Single ownership is NOT the
+      // guarantee; step idempotency is. Both pulls count as attempts.
+      const first = claimNextReclamationLedgerEntry(database, { now: 2_000 });
+      const second = claimNextReclamationLedgerEntry(database, { now: 2_000 });
 
-      expect(winner?.id).toBe(id);
-      expect(winner?.state).toBe("running");
-      expect(loser).toBeUndefined();
-      expect(readReclamationLedgerEntry(database, id)?.attempts).toBe(1);
+      expect(first?.id).toBe(id);
+      expect(second?.id).toBe(id);
+      expect(readReclamationLedgerEntry(database, id)?.attempts).toBe(2);
+
+      // COMPLETE is idempotent, so a doubled finish still lands on done exactly once.
+      completeReclamationLedgerEntry(database, { id, now: 3_000, sessionFullyDeleted: false });
+      completeReclamationLedgerEntry(database, { id, now: 3_000, sessionFullyDeleted: false });
+      expect(readReclamationLedgerEntry(database, id)?.state).toBe("done");
+      expect(hasClaimableReclamationLedgerEntry(database)).toBe(false);
     } finally {
       database.close();
     }
@@ -110,7 +119,7 @@ describe("reclamation ledger queue", () => {
     }
   });
 
-  it("does not stall the queue behind a running entry it cannot re-claim", () => {
+  it("re-claims a running entry a crashed process left behind and resumes at its step", () => {
     const database = openLedgerDatabase();
     try {
       const crashed = enqueue(database, {
@@ -118,19 +127,44 @@ describe("reclamation ledger queue", () => {
         now: 1_000,
         sessionId: "s-crashed",
       });
-      // A crashed process leaves the top entry state=running.
+      // A crashed process leaves the entry state=running at cursor 2.
       expect(claimNextReclamationLedgerEntry(database, { now: 2_000 })?.id).toBe(crashed.id);
+      advanceReclamationLedgerStep(database, { id: crashed.id, now: 2_100, stepCursor: 2 });
 
-      const queued = enqueue(database, {
-        generation: "2".repeat(32),
-        now: 5_000,
-        sessionId: "s-queued",
+      // The fresh runner takes the entry over and resumes from the recorded cursor.
+      const resumed = claimNextReclamationLedgerEntry(database, { now: 3_000 });
+      expect(resumed?.id).toBe(crashed.id);
+      expect(resumed?.stepCursor).toBe(2);
+      expect(readReclamationLedgerEntry(database, crashed.id)?.attempts).toBe(2);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("keeps the step cursor monotonic so a stale runner cannot rewind progress", () => {
+    const database = openLedgerDatabase();
+    try {
+      const { id } = enqueue(database);
+      advanceReclamationLedgerStep(database, { id, now: 2_000, stepCursor: 3 });
+      // A stale runner that only reached cursor 1 must not move the boundary backwards.
+      advanceReclamationLedgerStep(database, { id, now: 2_100, stepCursor: 1 });
+      expect(readReclamationLedgerEntry(database, id)?.stepCursor).toBe(3);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("requeues a benign yield without recording an error or a failed count", () => {
+    const database = openLedgerDatabase();
+    try {
+      const { id } = enqueue(database);
+      claimNextReclamationLedgerEntry(database, { now: 2_000 });
+      yieldReclamationLedgerEntry(database, { id, now: 2_100 });
+      expect(readReclamationLedgerEntry(database, id)).toMatchObject({
+        attempts: 1,
+        lastError: null,
+        state: "queued",
       });
-      const next = claimNextReclamationLedgerEntry(database, { now: 6_000 });
-
-      // The running row is skipped, not re-claimed; the queued row is served.
-      expect(next?.id).toBe(queued.id);
-      expect(readReclamationLedgerEntry(database, crashed.id)?.state).toBe("running");
     } finally {
       database.close();
     }
@@ -211,7 +245,7 @@ describe("reclamation ledger queue", () => {
     expect(runner.isRunning()).toBe(false);
   });
 
-  it("drains a burst with a single push and stops when empty", async () => {
+  it("drains a burst from the boot trigger and stops when empty", async () => {
     const database = openLedgerDatabase();
     try {
       enqueue(database, { generation: "f".repeat(32), sessionId: "s-1" });
@@ -230,7 +264,7 @@ describe("reclamation ledger queue", () => {
         },
       });
 
-      runner.push();
+      runner.start();
       expect(runner.isRunning()).toBe(true);
       await runner.whenIdle();
 
