@@ -15,6 +15,7 @@ import {
 import {
   createReclamationPhaseOperations,
   createReclamationPhaseOperationsFactory,
+  type ReclamationPhaseExclusiveWrite,
   reconcileReclamationArchivePhase,
   toSessionStateDeletePlans,
 } from "./session-accessor.sqlite-reclamation-operations.js";
@@ -24,6 +25,10 @@ import type { SerializedSqliteSessionReclamationPlan } from "./session-accessor.
 const GENERATION = "443a91f600f748d2a8052cb1fbafa327";
 const SESSION_ID = "session-1";
 const BYTES = new Uint8Array([1, 2, 3, 4]);
+
+// The default exclusive write resolves a store path from the plan and would bypass these
+// tests' in-memory handles; the passthrough keeps the operations on the fixture database.
+const passthrough: ReclamationPhaseExclusiveWrite = (_operation, run) => run();
 
 function openDatabase(): OpenClawAgentDatabase {
   const db = new DatabaseSync(":memory:");
@@ -192,6 +197,7 @@ describe("reclamation phase operations (part 4b-2)", () => {
         materializePlans: materializeTo(BYTES),
         phase: "batch-delete",
         plan: evictionPlan(),
+        runExclusiveWrite: passthrough,
         stepCursor: 2,
       });
       expect(await operations.evaluateGuard()).toEqual({ passed: true });
@@ -221,6 +227,7 @@ describe("reclamation phase operations (part 4b-2)", () => {
           entry: ledgerEntry(JSON.stringify(evictionPlan())),
           phase: "batch-delete",
           plan: evictionPlan(),
+          runExclusiveWrite: passthrough,
           stepCursor,
         });
         await operations.removeArchiveForDecline();
@@ -275,6 +282,7 @@ describe("reclamation phase operations (part 4b-2)", () => {
         database,
         deleteReclaimedRows: () => undefined,
         materializePlans: materializeTo(BYTES),
+        runExclusiveWrite: passthrough,
       });
       const entry = ledgerEntry(JSON.stringify(evictionPlan()));
       const guard = factory({ entry, phase: "guard", stepCursor: 0 });

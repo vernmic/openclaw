@@ -23,9 +23,14 @@
  * archive bytes' transfer list, so no in-memory plan survives a phase boundary. plan_json is the
  * durable source of truth; the in-memory plan is an optimization we do not keep.
  *
- * The batch-delete operation is injected because it is the one phase that still needs the live
- * per-kind transaction (and, in production, its own Worker commit gate). Wiring it to the live
- * primitives and the enqueue + push caller site is the next piece.
+ * Ruling 3 (2026-10-01, "the Worker windows dissolve"): no phase commits off-thread any more.
+ * Every phase's database work runs in the PARENT under the ordinary exclusive session-write
+ * admission (runExclusiveSqliteSessionWrite) -- one short window per database transaction, per
+ * phase. The one deliberate exception is phase 2's blob re-materialization: the zstd compute
+ * stays off-thread in the materialize Worker and runs OUTSIDE any admission window, so the
+ * write hold is only the INSERT + readback. The `entry` / `lifecycle-artifacts` kinds keep
+ * their single-transaction worker path unchanged (Ruling 1). Wiring the enqueue + push caller
+ * site is the next piece.
  */
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import type { ReclamationLedgerEntry } from "../../state/openclaw-agent-reclamation-queue.js";
@@ -51,12 +56,31 @@ import {
   type SerializedSqliteSessionReclamationPlan,
 } from "./session-accessor.sqlite-reclamation-plan.js";
 import { isRecentHistoricalSessionId } from "./session-accessor.sqlite-references.js";
+import { runExclusiveSqliteSessionWrite } from "./session-accessor.sqlite-scope.js";
+import type { SqliteSessionWriteOperation } from "./session-accessor.sqlite-write-operation.js";
 
 /** The archive Worker's own snapshot fence: a moved snapshot during materialization. */
 const SNAPSHOT_MOVED_MESSAGE = "SQLite session state changed before archive materialization";
 
 function isSnapshotMovedError(error: unknown): boolean {
   return error instanceof Error && error.message.includes(SNAPSHOT_MOVED_MESSAGE);
+}
+
+/**
+ * Runs one reclamation phase's database transaction under the session's exclusive write
+ * admission. Defaults to the ordinary runExclusiveSqliteSessionWrite queue every other session
+ * write uses (Ruling 3: phases run in the parent, one short window per database transaction);
+ * tests inject a passthrough so their in-memory handles stay authoritative.
+ */
+export type ReclamationPhaseExclusiveWrite = <T>(
+  operation: SqliteSessionWriteOperation,
+  run: () => Promise<T> | T,
+) => Promise<T>;
+
+function createDefaultExclusiveWrite(
+  scope: SerializedSqliteSessionReclamationPlan["databaseOptions"],
+): ReclamationPhaseExclusiveWrite {
+  return (operation, run) => runExclusiveSqliteSessionWrite(scope, async () => run(), operation);
 }
 
 /** Strips the durable archive metadata back to the un-materialized plan the Worker consumes. */
@@ -75,9 +99,60 @@ export function toSessionStateDeletePlans(
 }
 
 /**
- * Runs the archive-append phase: re-materialize the bytes and reconcile each with its durable
- * row. Both decline signals raise ReclamationPhaseDeclinedError (a normal, free outcome); a
- * sha256 conflict raises from reconcileReclamationArchive and stays a terminal failure.
+ * Phase 2's blob half: re-derive the archive bytes off-thread. No admission is held here --
+ * this is pure compute (zstd in the materialize Worker), and holding the session writer for it
+ * is exactly the hold the split exists to remove.
+ *
+ * The delete snapshot can move between the guard phase and here; materialization re-checks it
+ * and its fence throws. That is a normal decline, so the caller maps it to
+ * ReclamationPhaseDeclinedError rather than failed.
+ */
+export async function materializeReclamationArchivePlans(params: {
+  materializePlans?: (
+    plans: readonly SessionStateDeletePlan[],
+  ) => Promise<MaterializedSessionStateDeletePlan[]>;
+  plan: SerializedSqliteSessionReclamationPlan;
+}): Promise<MaterializedSessionStateDeletePlan[]> {
+  const materialize = params.materializePlans ?? materializeSessionStateDeletePlans;
+  try {
+    return await materialize(toSessionStateDeletePlans(params.plan.materializedPlans));
+  } catch (error) {
+    if (isSnapshotMovedError(error)) {
+      throw new ReclamationPhaseDeclinedError("delete-snapshot");
+    }
+    throw error;
+  }
+}
+
+/**
+ * Phase 2's database half: reconcile each re-materialized archive with its durable row. A
+ * sha256 or byte-length conflict raises from reconcileReclamationArchive and stays a terminal
+ * failure with no delete.
+ */
+export function persistReclamationArchiveRows(params: {
+  database: OpenClawAgentDatabase;
+  materialized: readonly MaterializedSessionStateDeletePlan[];
+  plan: SerializedSqliteSessionReclamationPlan;
+}): void {
+  for (const materializedPlan of params.materialized) {
+    const stored = params.plan.materializedPlans.find(
+      (serialized) => serialized.sessionId === materializedPlan.sessionId,
+    )?.archive;
+    if (!stored) {
+      continue;
+    }
+    reconcileReclamationArchive({
+      database: params.database,
+      plan: materializedPlan,
+      stored,
+    });
+  }
+}
+
+/**
+ * Runs the archive-append phase end to end. The phase operation itself splits this around the
+ * exclusive-write window (bytes outside, reconcile inside); this composition is the
+ * admission-free form the direct tests use.
  */
 export async function reconcileReclamationArchivePhase(params: {
   database: OpenClawAgentDatabase;
@@ -86,30 +161,8 @@ export async function reconcileReclamationArchivePhase(params: {
   ) => Promise<MaterializedSessionStateDeletePlan[]>;
   plan: SerializedSqliteSessionReclamationPlan;
 }): Promise<void> {
-  const { database, plan } = params;
-  const serializedPlans = plan.materializedPlans;
-  // The delete snapshot can move between the guard phase and here; materialization re-checks it
-  // and its fence throws. That is a normal decline, so the runner maps it to ReclamationPhase
-  // declined rather than failed.
-  const materialize = params.materializePlans ?? materializeSessionStateDeletePlans;
-  let materialized: MaterializedSessionStateDeletePlan[];
-  try {
-    materialized = await materialize(toSessionStateDeletePlans(serializedPlans));
-  } catch (error) {
-    if (isSnapshotMovedError(error)) {
-      throw new ReclamationPhaseDeclinedError("delete-snapshot");
-    }
-    throw error;
-  }
-  for (const materializedPlan of materialized) {
-    const stored = serializedPlans.find(
-      (serialized) => serialized.sessionId === materializedPlan.sessionId,
-    )?.archive;
-    if (!stored) {
-      continue;
-    }
-    reconcileReclamationArchive({ database, plan: materializedPlan, stored });
-  }
+  const materialized = await materializeReclamationArchivePlans(params);
+  persistReclamationArchiveRows({ database: params.database, materialized, plan: params.plan });
 }
 
 export type ReclamationDeleteExecutor = (params: {
@@ -130,9 +183,11 @@ export function createReclamationPhaseOperations(params: {
   ) => Promise<MaterializedSessionStateDeletePlan[]>;
   phase: ReclamationPhase;
   plan: SerializedSqliteSessionReclamationPlan;
+  runExclusiveWrite?: ReclamationPhaseExclusiveWrite;
   stepCursor: number;
 }): ReclamationPhaseOperations {
   const { database, entry, phase, plan, stepCursor } = params;
+  const exclusive = params.runExclusiveWrite ?? createDefaultExclusiveWrite(plan.databaseOptions);
   // Ruling 1 (2026-10-01): `entry` and `lifecycle-artifacts` keep the atomic single-transaction
   // path -- their companion mutations cannot be compensated across phase boundaries, so the
   // split admits only the two bulk/historical kinds.
@@ -161,32 +216,40 @@ export function createReclamationPhaseOperations(params: {
   };
 
   return {
-    appendArchive: () =>
-      reconcileReclamationArchivePhase({
-        database,
+    // Phase 2 splits around the admission window: the blob re-materialization runs first with
+    // no hold, then only the INSERT + readback reconcile enters the exclusive write.
+    appendArchive: async () => {
+      const materialized = await materializeReclamationArchivePlans({
         materializePlans: params.materializePlans,
         plan,
-      }),
+      });
+      await exclusive("session.reclamation.phase-archive", () =>
+        persistReclamationArchiveRows({ database, materialized, plan }),
+      );
+    },
     complete: () => {
       // Completion (including publication on the final phase) is the caller's job; mark is a no-op.
     },
     deleteReclaimedRows: () =>
-      params.deleteReclaimedRows({ database, entry, phase, plan, stepCursor }),
-    evaluateGuard,
-    removeArchiveForDecline: () => {
-      for (const serialized of plan.materializedPlans) {
-        const generation = serialized.snapshot.generation;
-        if (!generation) {
-          continue;
+      exclusive("session.reclamation.phase-delete", () =>
+        params.deleteReclaimedRows({ database, entry, phase, plan, stepCursor }),
+      ),
+    evaluateGuard: () => exclusive("session.reclamation.phase-guard", evaluateGuard),
+    removeArchiveForDecline: () =>
+      exclusive("session.reclamation.phase-cleanup", () => {
+        for (const serialized of plan.materializedPlans) {
+          const generation = serialized.snapshot.generation;
+          if (!generation) {
+            continue;
+          }
+          removeReclamationArchiveForDecline({
+            database,
+            generation,
+            sessionId: serialized.sessionId,
+            stepCursor,
+          });
         }
-        removeReclamationArchiveForDecline({
-          database,
-          generation,
-          sessionId: serialized.sessionId,
-          stepCursor,
-        });
-      }
-    },
+      }),
   };
 }
 
@@ -202,6 +265,7 @@ export function createReclamationPhaseOperationsFactory(params: {
   materializePlans?: (
     plans: readonly SessionStateDeletePlan[],
   ) => Promise<MaterializedSessionStateDeletePlan[]>;
+  runExclusiveWrite?: ReclamationPhaseExclusiveWrite;
 }): ReclamationPhaseOperationsFactory {
   const deserialize = params.deserializePlan ?? deserializeSqliteSessionReclamationPlan;
   return ({ entry, phase, stepCursor }) =>
@@ -212,6 +276,7 @@ export function createReclamationPhaseOperationsFactory(params: {
       materializePlans: params.materializePlans,
       phase,
       plan: deserialize(entry.planJson),
+      runExclusiveWrite: params.runExclusiveWrite,
       stepCursor,
     });
 }
