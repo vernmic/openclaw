@@ -10,15 +10,12 @@ import {
   RECLAMATION_LEDGER_TABLE,
 } from "./openclaw-agent-reclamation-ledger-schema.js";
 import { OPENCLAW_AGENT_SCHEMA_SQL } from "./openclaw-agent-schema.js";
+import { closeOpenClawStateDatabaseForTest } from "./openclaw-state-db.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 // A real generation token: 32-char hex, opaque, never castable to an integer.
 const GENERATION = "443a91f600f748d2a8052cb1fbafa327";
-
-afterEach(() => {
-  closeOpenClawAgentDatabasesForTest();
-});
 
 function insertLedgerRow(
   db: DatabaseSync,
@@ -40,6 +37,13 @@ function insertLedgerRow(
 }
 
 describe("reclamation ledger schema", () => {
+  // Runs before the module-level temp-dir cleanup: an open agent DB handle turns that
+  // rmSync into an EPERM on Windows.
+  afterEach(() => {
+    closeOpenClawAgentDatabasesForTest();
+    closeOpenClawStateDatabaseForTest();
+  });
+
   it("round-trips a real 32-hex generation through the ledger", () => {
     const database = new DatabaseSync(":memory:");
     try {
