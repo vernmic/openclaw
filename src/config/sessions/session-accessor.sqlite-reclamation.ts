@@ -28,15 +28,8 @@ import type {
   SqliteSessionReclamationDiagnostics,
 } from "./session-accessor.sqlite-contract.js";
 import { runSqliteSessionDeletionTransaction } from "./session-accessor.sqlite-deletion.js";
-import {
-  sqliteLifecycleTargetSnapshotsEqual,
-  sqliteSessionEntriesEqual,
-  type SqliteLifecycleTargetSnapshot,
-} from "./session-accessor.sqlite-entry-equality.js";
-import {
-  deleteLifecycleTargetRows,
-  readLifecycleTargetSnapshot,
-} from "./session-accessor.sqlite-entry-store.js";
+import type { SqliteLifecycleTargetSnapshot } from "./session-accessor.sqlite-entry-equality.js";
+import { deleteLifecycleTargetRows } from "./session-accessor.sqlite-entry-store.js";
 import { prepareCommittedSessionEntryRemovals } from "./session-accessor.sqlite-identity.js";
 import {
   assertPlannedLifecycleArtifactEntriesUnchanged,
@@ -46,14 +39,13 @@ import {
 import type { SessionEntryRemovalPlan } from "./session-accessor.sqlite-lifecycle-types.js";
 import { deleteSessionDeliveryArtifacts } from "./session-accessor.sqlite-node-artifacts.js";
 import { withSqliteReclamationAuthorization } from "./session-accessor.sqlite-reclamation-commit.js";
+import { evaluateSqliteReclamationTargetGuard } from "./session-accessor.sqlite-reclamation-guard.js";
 import { isRecentHistoricalSessionId } from "./session-accessor.sqlite-references.js";
 import {
   cloneSessionEntry,
   getSessionKysely,
   runExclusiveSqliteSessionWrite,
 } from "./session-accessor.sqlite-scope.js";
-import type { InternalSessionEntry as SessionEntry } from "./types.js";
-
 type SessionBoardCleanupDatabase = Pick<
   OpenClawAgentKyselyDatabase,
   "board_tabs" | "board_widgets"
@@ -182,47 +174,7 @@ function deleteSessionBoardRows(
   executeSqliteQuerySync(database.db, db.deleteFrom("board_tabs").where("session_key", "in", keys));
 }
 
-export function shouldDeleteSqliteSessionEntryLifecycle(
-  database: OpenClawAgentDatabase,
-  entry: SessionEntry | undefined,
-  params: DeleteSessionEntryLifecycleParams,
-): entry is SessionEntry {
-  if (!entry || (params.expectedEntry && !sqliteSessionEntriesEqual(entry, params.expectedEntry))) {
-    return false;
-  }
-  if (
-    params.expectedSessionId !== undefined &&
-    (params.expectedSessionId === null
-      ? entry.sessionId !== undefined
-      : entry.sessionId !== params.expectedSessionId)
-  ) {
-    return false;
-  }
-  if (
-    (params.expectedLifecycleRevision !== undefined &&
-      entry.lifecycleRevision !== params.expectedLifecycleRevision) ||
-    (params.expectedUpdatedAt !== undefined && entry.updatedAt !== params.expectedUpdatedAt)
-  ) {
-    return false;
-  }
-  const expectedTranscript = params.expectedTranscript;
-  if (!expectedTranscript) {
-    return true;
-  }
-  const rows = executeSqliteQuerySync(
-    database.db,
-    getSessionKysely(database.db)
-      .selectFrom("transcript_events")
-      .select("event_json")
-      .where("session_id", "=", expectedTranscript.sessionId)
-      .orderBy("seq", "asc"),
-  ).rows;
-  return (
-    entry.sessionId === expectedTranscript.sessionId &&
-    rows.length === expectedTranscript.eventJson.length &&
-    rows.every((row, index) => row.event_json === expectedTranscript.eventJson[index])
-  );
-}
+export { shouldDeleteSqliteSessionEntryLifecycle } from "./session-accessor.sqlite-reclamation-guard.js";
 
 function expectedEntryMismatchResult(): DeleteSessionEntryLifecycleResult {
   return { archivedTranscripts: [], deleted: false, expectedEntryMismatch: true };
@@ -239,14 +191,12 @@ export function reclaimSqliteSessionInTransaction(
     const value = runSqliteSessionDeletionTransaction<DeleteSessionEntryLifecycleResult>(
       (transactionDb) => {
         callbacks.beforeMutation?.();
-        const snapshot = readLifecycleTargetSnapshot(transactionDb, plan.deleteParams.target);
-        const entry = snapshot[0]?.entry;
-        if (
-          !sqliteLifecycleTargetSnapshotsEqual(plan.preparedTargetSnapshot, snapshot) ||
-          !shouldDeleteSqliteSessionEntryLifecycle(transactionDb, entry, plan.deleteParams)
-        ) {
+        const guard = evaluateSqliteReclamationTargetGuard(transactionDb, plan);
+        if (!guard.passed) {
           return expectedEntryMismatchResult();
         }
+        const snapshot = guard.snapshot;
+        const entry = snapshot[0]?.entry;
         const sessionKeys = [
           plan.deleteParams.target.canonicalKey,
           ...plan.deleteParams.target.storeKeys,
@@ -306,17 +256,11 @@ export function reclaimSqliteSessionInTransaction(
     const diskBudget = plan.kind === "history-eviction" ? plan.diskBudget : undefined;
     let excludedSessionKeys: ReadonlySet<string> | undefined;
     if (plan.kind === "historical-generation") {
-      const snapshot = readLifecycleTargetSnapshot(transactionDb, plan.deleteParams.target);
-      if (
-        !sqliteLifecycleTargetSnapshotsEqual(plan.preparedTargetSnapshot, snapshot) ||
-        !shouldDeleteSqliteSessionEntryLifecycle(
-          transactionDb,
-          snapshot[0]?.entry,
-          plan.deleteParams,
-        )
-      ) {
+      const guard = evaluateSqliteReclamationTargetGuard(transactionDb, plan);
+      if (!guard.passed) {
         return { archivedTranscripts: [], deleted: false, expectedEntryMismatch: true as const };
       }
+      const snapshot = guard.snapshot;
       // Explicit deletion excludes its validated owner; automatic pressure does not.
       excludedSessionKeys = new Set([
         plan.deleteParams.target.canonicalKey,
