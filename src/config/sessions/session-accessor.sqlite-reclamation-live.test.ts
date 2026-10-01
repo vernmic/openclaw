@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ReclamationLedgerEntry } from "../../state/openclaw-agent-reclamation-queue.js";
+import { SqliteDeleteSnapshotMovedError } from "./session-accessor.sqlite-lifecycle-state.js";
 import { ReclamationPhaseDeclinedError } from "./session-accessor.sqlite-reclamation-phases.js";
 import type { SerializedSqliteSessionReclamationPlan } from "./session-accessor.sqlite-reclamation-plan.js";
 
@@ -125,9 +126,21 @@ describe("live reclamation delete binding (part 5)", () => {
   it("maps a moved delete snapshot to a normal decline", async () => {
     reclaimMock.reclaimSqliteSessionInTransaction.mockReset();
     reclaimMock.reclaimSqliteSessionInTransaction.mockImplementation(() => {
-      throw new Error("SQLite session state changed before deletion for s1");
+      throw new SqliteDeleteSnapshotMovedError("s1");
     });
     await expect(deleteOnce(entryPlan())).rejects.toBeInstanceOf(ReclamationPhaseDeclinedError);
+  });
+
+  it("rethrows a prose look-alike so a rollback failure never reads as a decline", async () => {
+    // The typed error is the contract. A plain Error that merely quotes the old message text --
+    // e.g. an aggregate pairing a rollback failure with a moved-snapshot cause -- must fail the
+    // entry (replan-able only via a fresh re-plan), never be classified as a benign decline.
+    reclaimMock.reclaimSqliteSessionInTransaction.mockReset();
+    reclaimMock.reclaimSqliteSessionInTransaction.mockImplementation(() => {
+      throw new Error("SQLite session state changed before deletion for s1");
+    });
+    await expect(deleteOnce(entryPlan())).rejects.toBeInstanceOf(Error);
+    await expect(deleteOnce(entryPlan())).rejects.not.toBeInstanceOf(ReclamationPhaseDeclinedError);
   });
 
   it("rethrows an unrelated failure so the entry fails, never declines", async () => {

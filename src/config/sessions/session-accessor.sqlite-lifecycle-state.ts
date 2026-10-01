@@ -180,6 +180,18 @@ export function planSessionStateDeleteIfUnreferenced(params: {
   };
 }
 
+/**
+ * The delete snapshot moved between plan materialization and deletion. A normal, non-failure
+ * outcome (the world changed while the plan was in flight): callers discriminate it by type,
+ * never by message text, so rewording here cannot reclassify a decline on the delete path.
+ */
+export class SqliteDeleteSnapshotMovedError extends Error {
+  constructor(sessionId: string) {
+    super(`SQLite session state changed before deletion for ${sessionId}`);
+    this.name = "SqliteDeleteSnapshotMovedError";
+  }
+}
+
 export function deleteMaterializedSessionStatePlans(
   database: OpenClawAgentDatabase,
   plans: readonly MaterializedSessionStateDeletePlan[],
@@ -208,7 +220,7 @@ export function deleteMaterializedSessionStatePlans(
     }
     const currentSnapshot = readSessionStateDeleteSnapshot(database.db, plan.sessionId);
     if (!sqliteSessionStateDeleteSnapshotsEqual(currentSnapshot, plan.snapshot)) {
-      throw new Error(`SQLite session state changed before deletion for ${plan.sessionId}`);
+      throw new SqliteDeleteSnapshotMovedError(plan.sessionId);
     }
     if (plan.archive) {
       persistSessionTranscriptArchive(database, plan);

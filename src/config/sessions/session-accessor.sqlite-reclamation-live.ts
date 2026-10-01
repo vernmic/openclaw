@@ -18,7 +18,7 @@
  *
  * Decline mapping. The shared transaction already signals the two legitimate declines:
  *
- *  - a moved delete snapshot throws ("SQLite session state changed before deletion ..."), and
+ *  - a moved delete snapshot throws SqliteDeleteSnapshotMovedError, typed at its source, and
  *  - a target-snapshot mismatch returns { expectedEntryMismatch: true }.
  *
  * Both are normal, free outcomes -- the runner maps them to a terminal decline, not a failure.
@@ -27,6 +27,7 @@
 import { executeSqliteQuerySync } from "../../infra/kysely-sync.js";
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import type { MaterializedSessionStateDeletePlan } from "./session-accessor.sqlite-archive.js";
+import { SqliteDeleteSnapshotMovedError } from "./session-accessor.sqlite-lifecycle-state.js";
 import type { ReclamationDeleteExecutor } from "./session-accessor.sqlite-reclamation-operations.js";
 import { ReclamationPhaseDeclinedError } from "./session-accessor.sqlite-reclamation-phases.js";
 import type { SerializedSqliteSessionReclamationPlan } from "./session-accessor.sqlite-reclamation-plan.js";
@@ -35,13 +36,6 @@ import {
   reclaimSqliteSessionInTransaction,
 } from "./session-accessor.sqlite-reclamation.js";
 import { getSessionKysely } from "./session-accessor.sqlite-scope.js";
-
-/** The shared transaction re-checks the delete snapshot; a moved snapshot is a normal decline. */
-const DELETE_SNAPSHOT_MOVED_MESSAGE = "SQLite session state changed before deletion";
-
-function isDeleteSnapshotMovedError(error: unknown): boolean {
-  return error instanceof Error && error.message.includes(DELETE_SNAPSHOT_MOVED_MESSAGE);
-}
 
 /**
  * Rebuilds the durable plan as a delete-only live plan: same shape, archive bytes and archived
@@ -93,7 +87,9 @@ export function createLiveReclamationDeleteExecutor(): ReclamationDeleteExecutor
     try {
       result = reclaimSqliteSessionInTransaction(livePlan);
     } catch (error) {
-      if (isDeleteSnapshotMovedError(error)) {
+      // Discriminated by type, not message text: composed errors (an aggregate pairing a rollback
+      // failure with a moved-snapshot cause) must fail the entry, never read as a decline.
+      if (error instanceof SqliteDeleteSnapshotMovedError) {
         throw new ReclamationPhaseDeclinedError("delete-snapshot");
       }
       throw error;
