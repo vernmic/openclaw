@@ -19,7 +19,7 @@ const { createLiveReclamationDeleteExecutor, toDeleteOnlyReclamationPlan } =
   await import("./session-accessor.sqlite-reclamation-live.js");
 
 function entryPlan(
-  overrides: { kind?: "entry" | "lifecycle-artifacts" } = {},
+  overrides: { kind?: "entry" | "historical-generation" | "lifecycle-artifacts" } = {},
 ): SerializedSqliteSessionReclamationPlan {
   return {
     databaseOptions: {
@@ -31,7 +31,7 @@ function entryPlan(
       deleteDeliveryArtifacts: false,
       target: { canonicalKey: "agent:main:s1", storeKeys: [] },
     },
-    kind: overrides.kind ?? "entry",
+    kind: overrides.kind ?? "historical-generation",
     ...(overrides.kind === "lifecycle-artifacts"
       ? { agentId: "main", entries: [] }
       : { preparedTargetSnapshot: [] }),
@@ -89,19 +89,21 @@ describe("live reclamation delete binding (part 5)", () => {
     // Everything the shared per-kind transaction needs is preserved.
     expect(plan?.sessionId).toBe("s1");
     expect(plan?.archiveDirectory).toBe("C:\\state\\archives");
-    expect(live.kind).toBe("entry");
+    expect(live.kind).toBe("historical-generation");
   });
 
-  it("refuses lifecycle-artifacts plans before touching the shared transaction", () => {
+  it("refuses entry and lifecycle-artifacts plans before touching the shared transaction", () => {
     expect(() => toDeleteOnlyReclamationPlan(entryPlan({ kind: "lifecycle-artifacts" }))).toThrow(
       /lifecycle-artifacts/,
     );
+    // Ruling 1 (2026-10-01): entry keeps the atomic path; the split must never see it.
+    expect(() => toDeleteOnlyReclamationPlan(entryPlan({ kind: "entry" }))).toThrow(/entry/);
   });
 
   it("hands the shared transaction a delete-only plan and completes on success", async () => {
     reclaimMock.reclaimSqliteSessionInTransaction.mockReset();
     reclaimMock.reclaimSqliteSessionInTransaction.mockReturnValue({
-      kind: "entry",
+      kind: "historical-generation",
       value: { archivedTranscripts: [], deleted: true },
     });
     await expect(deleteOnce(entryPlan())).resolves.toBeUndefined();
@@ -114,7 +116,7 @@ describe("live reclamation delete binding (part 5)", () => {
   it("maps a target-snapshot mismatch to a normal decline", async () => {
     reclaimMock.reclaimSqliteSessionInTransaction.mockReset();
     reclaimMock.reclaimSqliteSessionInTransaction.mockReturnValue({
-      kind: "entry",
+      kind: "historical-generation",
       value: { archivedTranscripts: [], deleted: false, expectedEntryMismatch: true },
     });
     await expect(deleteOnce(entryPlan())).rejects.toBeInstanceOf(ReclamationPhaseDeclinedError);

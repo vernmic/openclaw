@@ -3,8 +3,9 @@
  *
  * The ledger executor (session-accessor.sqlite-reclamation-executor.ts) drives one claimed
  * entry through its phases, but it is deliberately transport-free: something must build each
- * phase's real operations. This module is that binding for the three transcript kinds the
- * ruling assigns to the four-phase path (entry / history-eviction / historical-generation).
+ * phase's real operations. This module is that binding for the two transcript kinds the
+ * ruling assigns to the four-phase path (history-eviction / historical-generation); `entry`
+ * and `lifecycle-artifacts` keep their atomic, single-transaction path (Ruling 1, 2026-10-01).
  *
  * It is the composition point, so it owns nothing new: it re-uses the pieces the earlier ticks
  * already proved in isolation --
@@ -132,12 +133,15 @@ export function createReclamationPhaseOperations(params: {
   stepCursor: number;
 }): ReclamationPhaseOperations {
   const { database, entry, phase, plan, stepCursor } = params;
-  if (plan.kind === "lifecycle-artifacts") {
-    throw new Error("lifecycle-artifacts plans keep their single-transaction path");
+  // Ruling 1 (2026-10-01): `entry` and `lifecycle-artifacts` keep the atomic single-transaction
+  // path -- their companion mutations cannot be compensated across phase boundaries, so the
+  // split admits only the two bulk/historical kinds.
+  if (plan.kind === "entry" || plan.kind === "lifecycle-artifacts") {
+    throw new Error(`${plan.kind} plans keep their single-transaction path`);
   }
 
   const evaluateGuard = () => {
-    if (plan.kind === "entry" || plan.kind === "historical-generation") {
+    if (plan.kind === "historical-generation") {
       const guard = evaluateSqliteReclamationTargetGuard(database, plan);
       return guard.passed
         ? ({ passed: true } as const)

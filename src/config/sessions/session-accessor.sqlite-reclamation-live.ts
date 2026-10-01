@@ -3,8 +3,9 @@
  *
  * The four-phase executor (session-accessor.sqlite-reclamation-executor.ts) and the operations
  * factory (session-accessor.sqlite-reclamation-operations.ts) are transport-free: the delete
- * operation is injected. This module is that injection for the three transcript kinds the ruling
- * assigns to the four-phase path (entry / history-eviction / historical-generation).
+ * operation is injected. This module is that injection for the two transcript kinds the ruling
+ * assigns to the four-phase path (history-eviction / historical-generation); `entry` and
+ * `lifecycle-artifacts` keep their atomic, single-transaction path (Ruling 1, 2026-10-01).
  *
  * The delete phase does NOT re-archive. Phase 2 (ARCHIVE-APPEND) already committed the archive
  * row, and the ledger's committed step_cursor is the proof that it did; re-materializing the blob
@@ -49,8 +50,8 @@ function isDeleteSnapshotMovedError(error: unknown): boolean {
 export function toDeleteOnlyReclamationPlan(
   plan: SerializedSqliteSessionReclamationPlan,
 ): SqliteSessionReclamationPlan {
-  if (plan.kind === "lifecycle-artifacts") {
-    throw new Error("lifecycle-artifacts plans keep their single-transaction path");
+  if (plan.kind === "entry" || plan.kind === "lifecycle-artifacts") {
+    throw new Error(`${plan.kind} plans keep their single-transaction path`);
   }
   const materializedPlans = plan.materializedPlans.map(
     (materialized) =>
@@ -97,10 +98,7 @@ export function createLiveReclamationDeleteExecutor(): ReclamationDeleteExecutor
       }
       throw error;
     }
-    if (
-      (result.kind === "entry" || result.kind === "historical-generation") &&
-      result.value.expectedEntryMismatch
-    ) {
+    if (result.kind === "historical-generation" && result.value.expectedEntryMismatch) {
       throw new ReclamationPhaseDeclinedError("target-guard");
     }
   };

@@ -238,16 +238,10 @@ describe("reclamation phase operations (part 4b-2)", () => {
     }
   });
 
-  it("refuses the four-phase path for lifecycle-artifacts plans", () => {
+  it("refuses the four-phase path for entry and lifecycle-artifacts plans", () => {
     const database = openDatabase();
     try {
-      const plan = {
-        ...evictionPlan(),
-        agentId: "agent-1",
-        entries: [],
-        kind: "lifecycle-artifacts",
-      } as unknown as SerializedSqliteSessionReclamationPlan;
-      expect(() =>
+      const build = (plan: SerializedSqliteSessionReclamationPlan) => () =>
         createReclamationPhaseOperations({
           database,
           deleteReclaimedRows: () => undefined,
@@ -255,8 +249,20 @@ describe("reclamation phase operations (part 4b-2)", () => {
           phase: "guard",
           plan,
           stepCursor: 0,
-        }),
-      ).toThrow(/lifecycle-artifacts/);
+        });
+      const lifecyclePlan = {
+        ...evictionPlan(),
+        agentId: "agent-1",
+        entries: [],
+        kind: "lifecycle-artifacts",
+      } as unknown as SerializedSqliteSessionReclamationPlan;
+      expect(build(lifecyclePlan)).toThrow(/lifecycle-artifacts/);
+      // Ruling 1 (2026-10-01): entry keeps its atomic single-transaction path.
+      const entryPlan = {
+        ...evictionPlan(),
+        kind: "entry",
+      } as unknown as SerializedSqliteSessionReclamationPlan;
+      expect(build(entryPlan)).toThrow(/entry/);
     } finally {
       database.db.close();
     }
