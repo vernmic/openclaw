@@ -39,7 +39,6 @@ import {
   type MaterializedSessionStateDeletePlan,
   type SessionStateDeletePlan,
 } from "./session-accessor.sqlite-archive.js";
-import type { SessionLifecycleArchivedTranscript } from "./session-accessor.sqlite-contract.js";
 import {
   reconcileReclamationArchive,
   removeReclamationArchiveForDecline,
@@ -166,23 +165,13 @@ export async function reconcileReclamationArchivePhase(params: {
   persistReclamationArchiveRows({ database: params.database, materialized, plan: params.plan });
 }
 
-/**
- * What the delete phase reports back to the ledger executor (piece iv, part 2). The archived
- * transcripts are deliberately NOT durable -- the ledger row cannot carry them -- so the value
- * travels in-process from the delete operation to the completion signal the waiting call site
- * reads. A delete that removed nothing (a decline) returns an empty list, not undefined.
- */
-export type ReclamationDeleteOutcome = {
-  archivedTranscripts: SessionLifecycleArchivedTranscript[];
-} | void;
-
 export type ReclamationDeleteExecutor = (params: {
   database: OpenClawAgentDatabase;
   entry: ReclamationLedgerEntry;
   phase: ReclamationPhase;
   plan: SerializedSqliteSessionReclamationPlan;
   stepCursor: number;
-}) => Promise<ReclamationDeleteOutcome> | ReclamationDeleteOutcome;
+}) => Promise<void> | void;
 
 /** Builds the four operations for one phase against the live (or injected) primitives. */
 export function createReclamationPhaseOperations(params: {
@@ -194,12 +183,6 @@ export function createReclamationPhaseOperations(params: {
   ) => Promise<MaterializedSessionStateDeletePlan[]>;
   phase: ReclamationPhase;
   plan: SerializedSqliteSessionReclamationPlan;
-  /**
-   * Receives the transcripts the delete phase archived, so a multi-phase driver can carry them
-   * across the phase boundary to the in-process completion signal. Optional: a direct caller that
-   * never awaits a signal has no use for it.
-   */
-  recordDeletedArchivedTranscripts?: (transcripts: SessionLifecycleArchivedTranscript[]) => void;
   runExclusiveWrite?: ReclamationPhaseExclusiveWrite;
   stepCursor: number;
 }): ReclamationPhaseOperations {
@@ -247,14 +230,10 @@ export function createReclamationPhaseOperations(params: {
     complete: () => {
       // Completion (including publication on the final phase) is the caller's job; mark is a no-op.
     },
-    deleteReclaimedRows: async () => {
-      const outcome = await exclusive("session.reclamation.phase-delete", () =>
+    deleteReclaimedRows: () =>
+      exclusive("session.reclamation.phase-delete", () =>
         params.deleteReclaimedRows({ database, entry, phase, plan, stepCursor }),
-      );
-      if (outcome && outcome.archivedTranscripts) {
-        params.recordDeletedArchivedTranscripts?.(outcome.archivedTranscripts);
-      }
-    },
+      ),
     evaluateGuard: () => exclusive("session.reclamation.phase-guard", evaluateGuard),
     removeArchiveForDecline: () =>
       exclusive("session.reclamation.phase-cleanup", () => {
@@ -289,24 +268,15 @@ export function createReclamationPhaseOperationsFactory(params: {
   runExclusiveWrite?: ReclamationPhaseExclusiveWrite;
 }): ReclamationPhaseOperationsFactory {
   const deserialize = params.deserializePlan ?? deserializeSqliteSessionReclamationPlan;
-  // The holder lives on the factory, not on one phase's operations object: the delete phase writes
-  // the archived transcripts and a LATER phase (complete) settles the completion signal, so the
-  // value has to cross the phase boundary. Every phase's operations object exposes the same reader.
-  let deletedArchivedTranscripts: SessionLifecycleArchivedTranscript[] = [];
-  return ({ entry, phase, stepCursor }) => ({
-    ...createReclamationPhaseOperations({
+  return ({ entry, phase, stepCursor }) =>
+    createReclamationPhaseOperations({
       database: params.database,
       deleteReclaimedRows: params.deleteReclaimedRows,
       entry,
       materializePlans: params.materializePlans,
       phase,
       plan: deserialize(entry.planJson),
-      recordDeletedArchivedTranscripts: (transcripts) => {
-        deletedArchivedTranscripts = transcripts;
-      },
       runExclusiveWrite: params.runExclusiveWrite,
       stepCursor,
-    }),
-    readDeletedArchivedTranscripts: () => deletedArchivedTranscripts,
-  });
+    });
 }

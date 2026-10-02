@@ -33,10 +33,6 @@ import {
   yieldReclamationLedgerEntry,
 } from "../../state/openclaw-agent-reclamation-queue.js";
 import {
-  failReclamationLedgerCompletion,
-  settleReclamationLedgerCompletion,
-} from "./session-accessor.sqlite-reclamation-completion.js";
-import {
   type ReclamationPhase,
   type ReclamationPhaseOperations,
   reclamationPhaseForStepCursor,
@@ -84,9 +80,6 @@ export async function executeReclamationLedgerEntry(params: {
       return { kind: "yielded", phase };
     }
     failReclamationLedgerEntry(database, { error, id: entry.id, now: params.now() });
-    // A failure is not a value: reject every in-process waiter so a call site awaiting the entry
-    // never hangs on a terminal outcome (piece iv, part 2).
-    failReclamationLedgerCompletion(database, entry.id, error);
     return { error, kind: "failed", phase };
   };
 
@@ -117,14 +110,6 @@ export async function executeReclamationLedgerEntry(params: {
         now: params.now(),
         reason: outcome.phase + ":" + outcome.reason,
       });
-      // A decline RESOLVES the signal, it does not reject it (the ruling has said so three times).
-      // Nothing was deleted, and the historical-generation site reports this upward as a mismatch,
-      // which its caller already understands.
-      settleReclamationLedgerCompletion(database, entry.id, {
-        archivedTranscripts: [],
-        deleted: false,
-        expectedEntryMismatch: true,
-      });
       return { kind: "declined", phase: outcome.phase, reason: outcome.reason };
     }
     if (outcome.kind === "failed") {
@@ -135,13 +120,6 @@ export async function executeReclamationLedgerEntry(params: {
       id: entry.id,
       now: params.now(),
       sessionFullyDeleted,
-    });
-    // Deliver the values the atomic path used to return synchronously to any in-process waiter.
-    // They are not durable: a later pull, or a waiter registered after the row went terminal,
-    // resolves from the ledger row instead and gets an empty archivedTranscripts by construction.
-    settleReclamationLedgerCompletion(database, entry.id, {
-      archivedTranscripts: operations.readDeletedArchivedTranscripts?.() ?? [],
-      deleted: sessionFullyDeleted,
     });
     return { kind: "done", sessionFullyDeleted };
   }

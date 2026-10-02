@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ReclamationLedgerEntry } from "../../state/openclaw-agent-reclamation-queue.js";
 import { SqliteDeleteSnapshotMovedError } from "./session-accessor.sqlite-lifecycle-state.js";
-import type { ReclamationDeleteOutcome } from "./session-accessor.sqlite-reclamation-operations.js";
 import { ReclamationPhaseDeclinedError } from "./session-accessor.sqlite-reclamation-phases.js";
 import type { SerializedSqliteSessionReclamationPlan } from "./session-accessor.sqlite-reclamation-plan.js";
 
@@ -71,11 +70,9 @@ function ledgerEntry(plan: SerializedSqliteSessionReclamationPlan): ReclamationL
   };
 }
 
-async function deleteOnce(
-  plan: SerializedSqliteSessionReclamationPlan,
-): Promise<ReclamationDeleteOutcome> {
+async function deleteOnce(plan: SerializedSqliteSessionReclamationPlan): Promise<void> {
   const executor = createLiveReclamationDeleteExecutor();
-  return await executor({
+  await executor({
     database: {} as never,
     entry: ledgerEntry(plan),
     phase: "batch-delete",
@@ -110,30 +107,11 @@ describe("live reclamation delete binding (part 5)", () => {
       kind: "historical-generation",
       value: { archivedTranscripts: [], deleted: true },
     });
-    // Piece iv, part 2: the executor now reports the consumer value the atomic path returned,
-    // so a waiting call site can be settled with it.
-    await expect(deleteOnce(entryPlan())).resolves.toEqual({ archivedTranscripts: [] });
+    await expect(deleteOnce(entryPlan())).resolves.toBeUndefined();
     const passed = reclaimMock.reclaimSqliteSessionInTransaction.mock.calls[0]?.[0] as {
       materializedPlans: Array<{ archive: unknown }>;
     };
     expect(passed.materializedPlans[0]?.archive).toBeNull();
-  });
-
-  it("surfaces the archived transcripts the shared transaction reports", async () => {
-    const archived = [
-      {
-        archivedPath: "archives/one.zst",
-        generation: GENERATION,
-        sessionId: "s1",
-        sourcePath: "transcripts/one.jsonl",
-      },
-    ];
-    reclaimMock.reclaimSqliteSessionInTransaction.mockReset();
-    reclaimMock.reclaimSqliteSessionInTransaction.mockReturnValue({
-      kind: "historical-generation",
-      value: { archivedTranscripts: archived, deleted: true },
-    });
-    await expect(deleteOnce(entryPlan())).resolves.toEqual({ archivedTranscripts: archived });
   });
 
   it("maps a target-snapshot mismatch to a normal decline", async () => {

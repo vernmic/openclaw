@@ -97,8 +97,5 @@ export function createLiveReclamationDeleteExecutor(): ReclamationDeleteExecutor
     if (result.kind === "historical-generation" && result.value.expectedEntryMismatch) {
       throw new ReclamationPhaseDeclinedError("target-guard");
     }
-    // Surface the consumer value the atomic path returned synchronously (piece iv, part 2): the
-    // ledger executor carries it into the in-process completion signal a waiting call site reads.
-    return { archivedTranscripts: result.value.archivedTranscripts };
   };
 }
