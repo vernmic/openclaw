@@ -18,6 +18,9 @@ import {
 import { ReclamationPhaseDeclinedError } from "./session-accessor.sqlite-reclamation-phases.js";
 
 const GENERATION = "443a91f600f748d2a8052cb1fbafa327";
+// A structurally valid plan_json: at completion the executor reconstructs the caller's
+// archived-transcript identities from it (empty here, so the return is an empty list).
+const PLAN_JSON = JSON.stringify({ kind: "history-eviction", materializedPlans: [] });
 
 type FakeState = {
   appendThrows?: unknown;
@@ -38,7 +41,7 @@ function enqueueAndClaim(database: DatabaseSync, sessionId = "session-1"): Recla
   enqueueReclamationLedgerEntry(database, {
     generation: GENERATION,
     now: 1_000,
-    planJson: "{}",
+    planJson: PLAN_JSON,
     sessionId,
   });
   const entry = claimNextReclamationLedgerEntry(database, { now: 1_100 });
@@ -101,7 +104,11 @@ describe("reclamation ledger executor", () => {
         now: counts(),
       });
 
-      expect(result).toEqual({ kind: "done", sessionFullyDeleted: false });
+      expect(result).toEqual({
+        archivedTranscripts: [],
+        kind: "done",
+        sessionFullyDeleted: false,
+      });
       expect(state.calls).toEqual([
         "guard:guard",
         "appendArchive",
@@ -137,7 +144,11 @@ describe("reclamation ledger executor", () => {
         now: counts(),
       });
 
-      expect(result).toEqual({ kind: "done", sessionFullyDeleted: false });
+      expect(result).toEqual({
+        archivedTranscripts: [],
+        kind: "done",
+        sessionFullyDeleted: false,
+      });
       expect(state.calls).toEqual(["guard:batch-delete", "deleteReclaimedRows", "complete"]);
     } finally {
       database.close();
@@ -391,7 +402,11 @@ describe("reclamation ledger executor", () => {
         readSessionFullyDeleted: () => true,
       });
 
-      expect(result).toEqual({ kind: "done", sessionFullyDeleted: true });
+      expect(result).toEqual({
+        archivedTranscripts: [],
+        kind: "done",
+        sessionFullyDeleted: true,
+      });
       expect(readReclamationLedgerEntry(database, entry.id)).toMatchObject({
         sessionFullyDeleted: true,
         state: "done",
@@ -419,7 +434,11 @@ describe("reclamation ledger executor", () => {
           entry,
           now: counts(),
         }),
-      ).resolves.toEqual({ kind: "done", sessionFullyDeleted: false });
+      ).resolves.toEqual({
+        archivedTranscripts: [],
+        kind: "done",
+        sessionFullyDeleted: false,
+      });
       expect(state.calls).toEqual(["complete"]);
       expect(readReclamationLedgerEntry(database, entry.id)).toMatchObject({
         state: "done",

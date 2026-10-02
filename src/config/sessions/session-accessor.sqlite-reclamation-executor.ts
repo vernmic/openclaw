@@ -32,15 +32,25 @@ import {
   type ReclamationLedgerEntry,
   yieldReclamationLedgerEntry,
 } from "../../state/openclaw-agent-reclamation-queue.js";
+import type { SessionLifecycleArchivedTranscript } from "./session-accessor.lifecycle-types.js";
+import { readReclamationArchiveName } from "./session-accessor.sqlite-reclamation-archive.js";
 import {
   type ReclamationPhase,
   type ReclamationPhaseOperations,
   reclamationPhaseForStepCursor,
   runSqliteSessionReclamationPhase,
 } from "./session-accessor.sqlite-reclamation-phases.js";
+import {
+  deserializeSqliteSessionReclamationPlan,
+  readReclamationArchivedTranscripts,
+} from "./session-accessor.sqlite-reclamation-plan.js";
 
 export type ReclamationEntryExecutionResult =
-  | { kind: "done"; sessionFullyDeleted: boolean }
+  | {
+      archivedTranscripts: SessionLifecycleArchivedTranscript[];
+      kind: "done";
+      sessionFullyDeleted: boolean;
+    }
   | { kind: "declined"; phase: ReclamationPhase; reason: string }
   | { error: unknown; kind: "failed"; phase: ReclamationPhase }
   | { kind: "yielded"; phase: ReclamationPhase };
@@ -116,11 +126,18 @@ export async function executeReclamationLedgerEntry(params: {
       return recordOutcome(outcome.error, outcome.phase);
     }
     const sessionFullyDeleted = params.readSessionFullyDeleted?.() ?? false;
+    // The identities a caller's return needs are not on the live (delete-only) plan: plan_json
+    // supplies the structure and the committed session_transcript_archives row is authoritative
+    // for the archive name. Reconstruct them before the terminal ledger row is written.
+    const archivedTranscripts = readReclamationArchivedTranscripts(
+      deserializeSqliteSessionReclamationPlan(entry.planJson),
+      (archiveKey) => readReclamationArchiveName(database, archiveKey),
+    );
     completeReclamationLedgerEntry(database, {
       id: entry.id,
       now: params.now(),
       sessionFullyDeleted,
     });
-    return { kind: "done", sessionFullyDeleted };
+    return { archivedTranscripts, kind: "done", sessionFullyDeleted };
   }
 }

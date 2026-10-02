@@ -17,6 +17,7 @@
  * "resume at step 2" into a terminal failure. The fresh bytes are therefore persisted under the
  * STORED metadata, which makes a re-run byte-and-row idempotent.
  */
+import type { DatabaseSync } from "node:sqlite";
 import {
   executeSqliteQuerySync,
   executeSqliteQueryTakeFirstSync,
@@ -72,6 +73,28 @@ export function readReclamationArchiveSha256(
   params: { generation: string; sessionId: string },
 ): string | undefined {
   return readReclamationArchiveRecord(database, params)?.sha256;
+}
+
+/**
+ * Reads the durable archive NAME for a committed (session_id, generation). The committed row --
+ * not plan_json -- is the authoritative record of what was archived, so the phased path's
+ * reconstructed archivedTranscripts derive from it exactly as the atomic path derives them from
+ * the archive it just persisted. Takes the raw handle because the ledger executor holds one.
+ */
+export function readReclamationArchiveName(
+  database: DatabaseSync,
+  params: { generation: string; sessionId: string },
+): string | undefined {
+  ensureSessionTranscriptArchiveSchema(database);
+  const db = getSessionKysely(database);
+  return executeSqliteQueryTakeFirstSync(
+    database,
+    db
+      .selectFrom("session_transcript_archives")
+      .select("archive_name")
+      .where("session_id", "=", params.sessionId)
+      .where("generation", "=", params.generation),
+  )?.archive_name;
 }
 
 /**

@@ -1,3 +1,4 @@
+import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
@@ -159,7 +160,18 @@ describe("reclamation ledger parent driver (piece c, part 11)", () => {
         now: countingClock(),
       });
 
-      expect(result).toEqual({ kind: "done", sessionFullyDeleted: false });
+      expect(result).toEqual({
+        archivedTranscripts: [
+          {
+            archivedPath: path.join("C:\\state\\archives", "archive.jsonl.zst"),
+            generation: GENERATION,
+            sessionId: SESSION_ID,
+            sourcePath: path.join("C:\\state\\archives", `${SESSION_ID}.jsonl`),
+          },
+        ],
+        kind: "done",
+        sessionFullyDeleted: false,
+      });
       // The blob re-materialization deliberately happens BEFORE the archive window opens:
       // holding the writer for off-thread zstd is the hold this split exists to remove.
       expect(events).toEqual([
@@ -216,7 +228,11 @@ describe("reclamation ledger parent driver (piece c, part 11)", () => {
       readSessionFullyDeleted: () => isReclamationSessionFullyDeleted(database, SESSION_ID),
     });
 
-    expect(result).toEqual({ kind: "done", sessionFullyDeleted: true });
+    expect(result).toEqual({
+      archivedTranscripts: [],
+      kind: "done",
+      sessionFullyDeleted: true,
+    });
     expect(readReclamationLedgerEntry(database.db, entry.id)).toMatchObject({
       sessionFullyDeleted: true,
       state: "done",

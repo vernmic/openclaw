@@ -7,6 +7,8 @@
  * plus per-plan archive METADATA only. Phase 2 re-derives the bytes from transcript_events
  * and re-verifies them against the stored sha256 before any delete.
  */
+import path from "node:path";
+import type { SessionLifecycleArchivedTranscript } from "./session-accessor.lifecycle-types.js";
 import type { SessionStateDeletePlan } from "./session-accessor.sqlite-archive.js";
 import type { SqliteLifecycleTargetSnapshot } from "./session-accessor.sqlite-entry-equality.js";
 import type { SessionEntryRemovalPlan } from "./session-accessor.sqlite-lifecycle-types.js";
@@ -148,6 +150,46 @@ export function serializeSqliteSessionReclamationPlan(plan: SqliteSessionReclama
         sessionId: plan.sessionId,
       });
   }
+}
+
+/**
+ * Reconstructs the archived-transcript identities an atomic reclamation would have returned.
+ *
+ * The four-phase delete runs on a DELETE-ONLY plan (archive bytes and archivedTranscript dropped
+ * to null), so the identities a caller's return needs are not on the live plan. The plan_json
+ * archive metadata supplies the structure (which session, which generation, which directory); the
+ * committed session_transcript_archives row is authoritative for the archive NAME and arrives as
+ * readArchiveName. This mirrors deleteMaterializedSessionStatePlans's own collection rule (a
+ * transcript sequence exists, an archive is present, deduped per session) and produces exactly the
+ * identity publishSessionStateArchives consumes: the (sessionId, generation) key plus the derived
+ * paths.
+ */
+export function readReclamationArchivedTranscripts(
+  plan: SerializedSqliteSessionReclamationPlan,
+  readArchiveName?: (params: { generation: string; sessionId: string }) => string | undefined,
+): SessionLifecycleArchivedTranscript[] {
+  const seen = new Set<string>();
+  const transcripts: SessionLifecycleArchivedTranscript[] = [];
+  for (const materialized of plan.materializedPlans) {
+    const generation = materialized.snapshot.generation;
+    if (materialized.snapshot.lastSeq === null || !materialized.archive || !generation) {
+      continue;
+    }
+    if (seen.has(materialized.sessionId)) {
+      continue;
+    }
+    seen.add(materialized.sessionId);
+    const sessionId = materialized.sessionId;
+    const archiveName =
+      readArchiveName?.({ generation, sessionId }) ?? materialized.archive.archiveName;
+    transcripts.push({
+      archivedPath: path.join(materialized.archiveDirectory, archiveName),
+      generation,
+      sessionId,
+      sourcePath: path.join(materialized.archiveDirectory, `${sessionId}.jsonl`),
+    });
+  }
+  return transcripts;
 }
 
 const RECLAMATION_PLAN_KINDS = new Set<string>([

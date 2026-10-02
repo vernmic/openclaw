@@ -1,9 +1,11 @@
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { RECLAMATION_FINAL_STEP_CURSOR } from "../../state/openclaw-agent-reclamation-queue.js";
 import {
   RECLAMATION_PHASE_CURSORS,
   RECLAMATION_PHASES,
   deserializeSqliteSessionReclamationPlan,
+  readReclamationArchivedTranscripts,
   serializeSqliteSessionReclamationPlan,
 } from "./session-accessor.sqlite-reclamation-plan.js";
 import type { SqliteSessionReclamationPlan } from "./session-accessor.sqlite-reclamation.js";
@@ -159,5 +161,46 @@ describe("reclamation plan codec", () => {
         '{"kind":"entry","materializedPlans":[{"archive":null}]}',
       ),
     ).toThrow(/missing a sessionId/);
+  });
+
+  it("reconstructs archived-transcript identities from a serialized plan", () => {
+    const codec = deserializeSqliteSessionReclamationPlan(
+      serializeSqliteSessionReclamationPlan(entryPlan("session-1")),
+    );
+    expect(readReclamationArchivedTranscripts(codec)).toEqual([
+      {
+        archivedPath: path.join("C:\\state\\archives", "archive.jsonl.zst"),
+        generation: "b".repeat(32),
+        sessionId: "session-1",
+        sourcePath: path.join("C:\\state\\archives", "session-1.jsonl"),
+      },
+    ]);
+  });
+
+  it("omits plans without an archive and dedupes repeated session ids", () => {
+    const noArchive = entryPlan("session-2");
+    (noArchive.materializedPlans[0] as { archive: unknown }).archive = null;
+    expect(
+      readReclamationArchivedTranscripts(
+        deserializeSqliteSessionReclamationPlan(serializeSqliteSessionReclamationPlan(noArchive)),
+      ),
+    ).toEqual([]);
+
+    const duplicated = entryPlan("session-3");
+    duplicated.materializedPlans.push(duplicated.materializedPlans[0]!);
+    expect(
+      readReclamationArchivedTranscripts(
+        deserializeSqliteSessionReclamationPlan(serializeSqliteSessionReclamationPlan(duplicated)),
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("prefers the committed archive name over the plan metadata", () => {
+    const codec = deserializeSqliteSessionReclamationPlan(
+      serializeSqliteSessionReclamationPlan(entryPlan("session-5")),
+    );
+    expect(
+      readReclamationArchivedTranscripts(codec, () => "committed.jsonl.zst")[0]?.archivedPath,
+    ).toBe(path.join("C:\\state\\archives", "committed.jsonl.zst"));
   });
 });
