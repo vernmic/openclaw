@@ -22,6 +22,7 @@
  *    snapshot -- is a normal terminal declined, distinct from a sha256 conflict, which is terminal
  *    failed with NO delete (the invariant's last line of defence).
  */
+import type { SessionLifecycleArchivedTranscript } from "./session-accessor.sqlite-contract.js";
 import {
   RECLAMATION_PHASE_CURSORS,
   RECLAMATION_PHASES,
@@ -60,6 +61,14 @@ export type ReclamationPhaseOperations = {
   removeArchiveForDecline: () => Promise<void> | void;
   /** Phase 4: mark the entry done and publish. Idempotent, so a resume may run it alone. */
   complete: () => Promise<void> | void;
+  /**
+   * The transcripts the delete phase archived, for the ledger executor to carry into the
+   * in-process completion signal (piece iv, part 2). Optional because the transport-free runner
+   * never reads it, and a direct caller that does not await a signal has no use for it. The
+   * operations factory binds it to a holder shared across phases, so the value captured by the
+   * delete phase survives into the complete phase's settle.
+   */
+  readDeletedArchivedTranscripts?: () => SessionLifecycleArchivedTranscript[];
 };
 
 export type ReclamationPhaseOutcome =

@@ -11,6 +11,7 @@ import {
 } from "../../state/openclaw-agent-reclamation-queue.js";
 import { OPENCLAW_AGENT_SCHEMA_SQL } from "../../state/openclaw-agent-schema.js";
 import { ReclamationArchiveConflictError } from "./session-accessor.sqlite-reclamation-archive.js";
+import { awaitReclamationLedgerCompletion } from "./session-accessor.sqlite-reclamation-completion.js";
 import {
   executeReclamationLedgerEntry,
   type ReclamationPhaseOperationsFactory,
@@ -21,6 +22,12 @@ const GENERATION = "443a91f600f748d2a8052cb1fbafa327";
 
 type FakeState = {
   appendThrows?: unknown;
+  archivedTranscripts?: Array<{
+    archivedPath: string;
+    generation: string;
+    sessionId: string;
+    sourcePath: string;
+  }>;
   calls: string[];
   deleteThrows?: unknown;
   guard2Pass?: boolean;
@@ -76,6 +83,7 @@ function fakeOperations(state: FakeState): ReclamationPhaseOperationsFactory {
             reason: phase === "guard" ? "target-mismatch" : "recent-activity",
           };
     },
+    readDeletedArchivedTranscripts: () => state.archivedTranscripts ?? [],
     removeArchiveForDecline: () => {
       state.calls.push("removeArchiveForDecline");
     },
@@ -396,6 +404,89 @@ describe("reclamation ledger executor", () => {
         sessionFullyDeleted: true,
         state: "done",
       });
+    } finally {
+      database.close();
+    }
+  });
+
+  it("settles a waiting call site with the delete phase's archived transcripts", async () => {
+    const database = openLedgerDatabase();
+    try {
+      const entry = enqueueAndClaim(database);
+      const archived = [
+        {
+          archivedPath: "archives/one.zst",
+          generation: GENERATION,
+          sessionId: "session-1",
+          sourcePath: "transcripts/one.jsonl",
+        },
+      ];
+      const state: FakeState = { archivedTranscripts: archived, calls: [] };
+
+      // Registered BEFORE the drive, as a call site would: the signal must carry the values the
+      // atomic path returned synchronously (piece iv, part 2).
+      const completion = awaitReclamationLedgerCompletion(database, entry.id);
+      const result = await executeReclamationLedgerEntry({
+        createOperations: fakeOperations(state),
+        database,
+        entry,
+        now: counts(),
+      });
+
+      expect(result).toEqual({ kind: "done", sessionFullyDeleted: false });
+      await expect(completion).resolves.toEqual({ archivedTranscripts: archived, deleted: false });
+    } finally {
+      database.close();
+    }
+  });
+
+  it("resolves a guard decline for a waiting call site instead of rejecting it", async () => {
+    const database = openLedgerDatabase();
+    try {
+      const entry = enqueueAndClaim(database);
+      const state: FakeState = { calls: [], guardPass: false };
+
+      const completion = awaitReclamationLedgerCompletion(database, entry.id);
+      await executeReclamationLedgerEntry({
+        createOperations: fakeOperations(state),
+        database,
+        entry,
+        now: counts(),
+      });
+
+      await expect(completion).resolves.toEqual({
+        archivedTranscripts: [],
+        deleted: false,
+        expectedEntryMismatch: true,
+      });
+    } finally {
+      database.close();
+    }
+  });
+
+  it("rejects a waiting call site when the entry fails on a sha256 conflict", async () => {
+    const database = openLedgerDatabase();
+    try {
+      const claimed = enqueueAndClaim(database);
+      advanceReclamationLedgerStep(database, { id: claimed.id, now: 1_500, stepCursor: 1 });
+      const entry = readReclamationLedgerEntry(database, claimed.id);
+      if (!entry) {
+        throw new Error("expected the advanced entry");
+      }
+      const state: FakeState = {
+        appendThrows: new ReclamationArchiveConflictError("stored != planned"),
+        calls: [],
+      };
+
+      const completion = awaitReclamationLedgerCompletion(database, entry.id);
+      await executeReclamationLedgerEntry({
+        createOperations: fakeOperations(state),
+        database,
+        entry,
+        now: counts(),
+      });
+
+      await expect(completion).rejects.toThrow("stored != planned");
     } finally {
       database.close();
     }
