@@ -108,11 +108,16 @@ describe("phased reclamation helper (piece iv, step 2)", () => {
     const archiveDirectory = path.join(stateDir, "archives");
     const plan = evictionPlan({ archiveDirectory, database, stateDir });
 
+    let materializeCalls = 0;
     const result = await runPhasedSqliteSessionReclamation({
       deleteReclaimedRows: () => {},
-      materializePlans: materializeTo(BYTES),
+      materializePlans: async (plans) => {
+        materializeCalls += 1;
+        return materializeTo(BYTES)(plans);
+      },
       now: countingClock(),
       plan,
+      validateInlineSnapshot: () => {},
     });
 
     expect(result).toEqual({
@@ -139,6 +144,9 @@ describe("phased reclamation helper (piece iv, step 2)", () => {
     // The delete phase runs on a delete-only plan: the archive identity is reconstructed from the
     // committed row, never re-materialized into the caller's return by the delete step.
     expect(result.kind === "history-eviction" && result.value.deleted).toBe(true);
+    // Materialize-once (piece iv-3): the inline drive reads the caller's in-hand plan, so phase 2
+    // never re-runs the archive Worker -- exactly one materialization per entry, by construction.
+    expect(materializeCalls).toBe(0);
   });
 
   it("re-plans the same session through the same generation without a duplicate archive row", async () => {
@@ -155,12 +163,14 @@ describe("phased reclamation helper (piece iv, step 2)", () => {
       materializePlans,
       now: countingClock(),
       plan,
+      validateInlineSnapshot: () => {},
     });
     const second = await runPhasedSqliteSessionReclamation({
       deleteReclaimedRows: () => {},
       materializePlans,
       now: countingClock(),
       plan,
+      validateInlineSnapshot: () => {},
     });
 
     expect(first).toEqual(second);

@@ -19,9 +19,13 @@
  *    ReclamationPhaseDeclinedError and a sha256 conflict to a terminal failure with NO delete;
  *  - the guard-2 decline cleanup removes the un-consumed step-2 archive row, cursor-gated.
  *
- * The plan is re-materialized from plan_json at EVERY phase: the first Worker post consumed the
- * archive bytes' transfer list, so no in-memory plan survives a phase boundary. plan_json is the
- * durable source of truth; the in-memory plan is an optimization we do not keep.
+ * Materialization ownership (piece iv-3, 2026-10-03): the caller materializes ONCE and its
+ * pre-materialized plans are the enqueue input; the INLINE drive reads those in-hand bytes in
+ * phase 2 (re-validating the delete snapshot) instead of re-running the archive Worker, which
+ * killed the duplicate materialize. A RECOVERY driver that did not enqueue the entry (boot sweep
+ * / orphan finisher) has no in-hand plan and re-derives the bytes from plan_json -- that is what
+ * the transfer-list rule reserves re-materialization for. The durable source of truth is still
+ * plan_json; the inline in-hand plan is valid only because it is the same process and entry.
  *
  * Ruling 3 (2026-10-01, "the Worker windows dissolve"): no phase commits off-thread any more.
  * Every phase's database work runs in the PARENT under the ordinary exclusive session-write
@@ -39,6 +43,10 @@ import {
   type MaterializedSessionStateDeletePlan,
   type SessionStateDeletePlan,
 } from "./session-accessor.sqlite-archive.js";
+import {
+  readSessionStateDeleteSnapshot,
+  sqliteSessionStateDeleteSnapshotsEqual,
+} from "./session-accessor.sqlite-delete-snapshot.js";
 import {
   reconcileReclamationArchive,
   removeReclamationArchiveForDecline,
@@ -82,6 +90,32 @@ function createDefaultExclusiveWrite(
 ): ReclamationPhaseExclusiveWrite {
   return (operation, run) => runExclusiveSqliteSessionWrite(scope, async () => run(), operation);
 }
+
+/**
+ * Phase 2's snapshot fence for the caller's own inline drive (materialize-once, piece iv-3).
+ *
+ * With materialize-once the caller's pre-materialization IS this phase's bytes, so the inline
+ * drive no longer runs the archive Worker and would otherwise lose the fence the Worker performed
+ * before it encoded. Re-read the delete snapshot and raise the same normal decline the Worker's
+ * fence raised when it moved -- the delete transaction re-checks anyway, but declining here keeps
+ * the archive phase from persisting bytes against a stale snapshot. Tests inject a passthrough.
+ */
+export type InlineReclamationSnapshotValidator = (params: {
+  database: OpenClawAgentDatabase;
+  materializedPlans: readonly MaterializedSessionStateDeletePlan[];
+}) => void;
+
+export const revalidateInlineReclamationSnapshot: InlineReclamationSnapshotValidator = ({
+  database,
+  materializedPlans,
+}) => {
+  for (const materializedPlan of materializedPlans) {
+    const current = readSessionStateDeleteSnapshot(database.db, materializedPlan.sessionId);
+    if (!sqliteSessionStateDeleteSnapshotsEqual(current, materializedPlan.snapshot)) {
+      throw new ReclamationPhaseDeclinedError("delete-snapshot");
+    }
+  }
+};
 
 /** Strips the durable archive metadata back to the un-materialized plan the Worker consumes. */
 export function toSessionStateDeletePlans(
@@ -178,6 +212,12 @@ export function createReclamationPhaseOperations(params: {
   database: OpenClawAgentDatabase;
   deleteReclaimedRows: ReclamationDeleteExecutor;
   entry: ReclamationLedgerEntry;
+  /**
+   * The caller's own pre-materialized plans (materialize-once, piece iv-3). Present only for the
+   * inline drive: phase 2 then READS these bytes instead of re-running the archive Worker, so the
+   * entry enqueues with exactly one materialization. Absent for a recovery driver, which re-derives.
+   */
+  inlineMaterializedPlans?: readonly MaterializedSessionStateDeletePlan[];
   materializePlans?: (
     plans: readonly SessionStateDeletePlan[],
   ) => Promise<MaterializedSessionStateDeletePlan[]>;
@@ -185,6 +225,8 @@ export function createReclamationPhaseOperations(params: {
   plan: SerializedSqliteSessionReclamationPlan;
   runExclusiveWrite?: ReclamationPhaseExclusiveWrite;
   stepCursor: number;
+  /** Snapshot fence for the inline drive; defaults to the live read-and-compare re-check. */
+  validateInlineSnapshot?: InlineReclamationSnapshotValidator;
 }): ReclamationPhaseOperations {
   const { database, entry, phase, plan, stepCursor } = params;
   const exclusive = params.runExclusiveWrite ?? createDefaultExclusiveWrite(plan.databaseOptions);
@@ -216,9 +258,21 @@ export function createReclamationPhaseOperations(params: {
   };
 
   return {
-    // Phase 2 splits around the admission window: the blob re-materialization runs first with
-    // no hold, then only the INSERT + readback reconcile enters the exclusive write.
+    // Phase 2 splits around the admission window: the blob step runs first with no hold, then only
+    // the INSERT + readback reconcile enters the exclusive write.
     appendArchive: async () => {
+      const inline = params.inlineMaterializedPlans;
+      if (inline) {
+        // Materialize-once (piece iv-3): the caller's pre-materialization IS this phase's bytes, so
+        // the inline drive reads them instead of re-running the archive Worker. Only the Worker's
+        // snapshot fence stays, as its own normal decline.
+        const validate = params.validateInlineSnapshot ?? revalidateInlineReclamationSnapshot;
+        validate({ database, materializedPlans: inline });
+        await exclusive("session.reclamation.phase-archive", () =>
+          persistReclamationArchiveRows({ database, materialized: inline, plan }),
+        );
+        return;
+      }
       const materialized = await materializeReclamationArchivePlans({
         materializePlans: params.materializePlans,
         plan,
@@ -262,10 +316,13 @@ export function createReclamationPhaseOperationsFactory(params: {
   database: OpenClawAgentDatabase;
   deleteReclaimedRows: ReclamationDeleteExecutor;
   deserializePlan?: (planJson: string) => SerializedSqliteSessionReclamationPlan;
+  /** The caller's own pre-materialized plans, when this factory drives its own entry inline. */
+  inlineMaterializedPlans?: readonly MaterializedSessionStateDeletePlan[];
   materializePlans?: (
     plans: readonly SessionStateDeletePlan[],
   ) => Promise<MaterializedSessionStateDeletePlan[]>;
   runExclusiveWrite?: ReclamationPhaseExclusiveWrite;
+  validateInlineSnapshot?: InlineReclamationSnapshotValidator;
 }): ReclamationPhaseOperationsFactory {
   const deserialize = params.deserializePlan ?? deserializeSqliteSessionReclamationPlan;
   return ({ entry, phase, stepCursor }) =>
@@ -273,10 +330,12 @@ export function createReclamationPhaseOperationsFactory(params: {
       database: params.database,
       deleteReclaimedRows: params.deleteReclaimedRows,
       entry,
+      inlineMaterializedPlans: params.inlineMaterializedPlans,
       materializePlans: params.materializePlans,
       phase,
       plan: deserialize(entry.planJson),
       runExclusiveWrite: params.runExclusiveWrite,
       stepCursor,
+      validateInlineSnapshot: params.validateInlineSnapshot,
     });
 }

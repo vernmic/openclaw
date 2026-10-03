@@ -13,9 +13,11 @@
  *    The plan's generation IS the archive identity; reclamation never rotates the generation, so a
  *    re-plan reuses it by construction and the live-uniqueness index dedups an in-flight session.
  *    Only a plan that carries no generation falls back to the ledger's most recent row.
- *  - DRIVE the own entry to terminal through executeReclamationLedgerEntry, whose per-phase
- *    operations factory re-materializes the plan from plan_json at every phase boundary (the
- *    transfer-list rule: no in-memory plan survives a phase).
+ *  - DRIVE the own entry to terminal through executeReclamationLedgerEntry, handing the per-phase
+ *    factory the caller's own in-hand materialized plans: this is the caller's own entry, same
+ *    process, so phase 2 READS those bytes (re-validating the snapshot) instead of re-running the
+ *    archive Worker -- one materialization per entry. A recovery driver has no in-hand plan and
+ *    re-derives from plan_json, which is what the transfer-list rule reserves re-derivation for.
  *  - MAP the terminal ledger state back to the atomic result shape. A decline RESOLVES: it is a
  *    normal outcome, reported the way the atomic path reported it -- expectedEntryMismatch true
  *    for historical-generation (its caller propagates the decline upward), plain deleted false for
@@ -49,6 +51,7 @@ import {
 } from "./session-accessor.sqlite-reclamation-live.js";
 import {
   createReclamationPhaseOperationsFactory,
+  type InlineReclamationSnapshotValidator,
   type ReclamationDeleteExecutor,
   type ReclamationPhaseExclusiveWrite,
 } from "./session-accessor.sqlite-reclamation-operations.js";
@@ -91,7 +94,7 @@ export async function runPhasedSqliteSessionReclamation(params: {
   diagnostics?: SqliteSessionReclamationDiagnostics;
   /** Off / in-process commit hook, mirroring runSqliteSessionReclamation's. */
   onInProcessCommit?: (database: OpenClawAgentDatabase) => void;
-  /** Test seam for the archive blob step; defaults to the real materialize Worker. */
+  /** Recovery-only test seam for the archive blob step; the inline drive reads in-hand bytes. */
   materializePlans?: (
     plans: readonly SessionStateDeletePlan[],
   ) => Promise<MaterializedSessionStateDeletePlan[]>;
@@ -99,6 +102,8 @@ export async function runPhasedSqliteSessionReclamation(params: {
   /** Test seam for the database owner; defaults to the cached agent-database handle. */
   openDatabase?: (options: OpenClawAgentDatabaseOptions) => OpenClawAgentDatabase;
   plan: PhasedSqliteSessionReclamationPlan;
+  /** Test seam for phase 2's inline snapshot fence; defaults to the live read-and-compare. */
+  validateInlineSnapshot?: InlineReclamationSnapshotValidator;
 }): Promise<SqliteSessionReclamationResult> {
   const { plan } = params;
   if (plan.kind !== "history-eviction" && plan.kind !== "historical-generation") {
@@ -188,8 +193,12 @@ export async function runPhasedSqliteSessionReclamation(params: {
   const createOperations = createReclamationPhaseOperationsFactory({
     database,
     deleteReclaimedRows: params.deleteReclaimedRows ?? createLiveReclamationDeleteExecutor(),
+    // The caller already materialized this plan; the inline drive reads those bytes in phase 2 so
+    // the entry enqueues behind exactly one materialization (piece iv-3, 2026-10-03 ruling).
+    inlineMaterializedPlans: plan.materializedPlans,
     materializePlans: params.materializePlans,
     runExclusiveWrite: exclusive,
+    validateInlineSnapshot: params.validateInlineSnapshot,
   });
 
   const outcome = await executeReclamationLedgerEntry({
