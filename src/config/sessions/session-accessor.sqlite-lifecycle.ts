@@ -53,6 +53,7 @@ import {
   readReferencedSessionIdsAfterTargetMutation,
 } from "./session-accessor.sqlite-lifecycle-state.js";
 import { refreshSqliteSessionPlannerStatisticsBestEffort } from "./session-accessor.sqlite-maintenance.js";
+import { runPhasedSqliteSessionReclamation } from "./session-accessor.sqlite-reclamation-phased.js";
 import {
   createHistoricalGenerationReclamationPlan,
   createLifecycleArtifactReclamationPlan,
@@ -540,7 +541,7 @@ async function deleteSqliteSessionEntryLifecycleLocked(
           if (reclamationPlan === DELETE_EXPECTED_ENTRY_MISMATCH) {
             return DELETE_EXPECTED_ENTRY_MISMATCH;
           }
-          const reclaimed = await runSqliteSessionReclamation({
+          const reclaimed = await runPhasedSqliteSessionReclamation({
             diagnostics,
             assertCommitAllowed: assertDeletionCurrent,
             forceInProcess: hasPreparedNativeSessionDeletion(),

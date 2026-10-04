@@ -60,9 +60,10 @@ import {
   readReclamationArchivedTranscripts,
   serializeSqliteSessionReclamationPlan,
 } from "./session-accessor.sqlite-reclamation-plan.js";
-import type {
-  SqliteSessionReclamationPlan,
-  SqliteSessionReclamationResult,
+import {
+  runSqliteSessionReclamation,
+  type SqliteSessionReclamationPlan,
+  type SqliteSessionReclamationResult,
 } from "./session-accessor.sqlite-reclamation.js";
 import { runExclusiveSqliteSessionWrite } from "./session-accessor.sqlite-scope.js";
 
@@ -92,6 +93,11 @@ export async function runPhasedSqliteSessionReclamation(params: {
   /** Test seam for the batch-delete phase; defaults to the live primitive binding. */
   deleteReclaimedRows?: ReclamationDeleteExecutor;
   diagnostics?: SqliteSessionReclamationDiagnostics;
+  /**
+   * Mirrors runSqliteSessionReclamation's flag. The four phases always run in the parent
+   * (Ruling 3), so the flag only matters when a plan falls back to the atomic path below.
+   */
+  forceInProcess?: boolean;
   /** Off / in-process commit hook, mirroring runSqliteSessionReclamation's. */
   onInProcessCommit?: (database: OpenClawAgentDatabase) => void;
   /** Recovery-only test seam for the archive blob step; the inline drive reads in-hand bytes. */
@@ -99,6 +105,12 @@ export async function runPhasedSqliteSessionReclamation(params: {
     plans: readonly SessionStateDeletePlan[],
   ) => Promise<MaterializedSessionStateDeletePlan[]>;
   now?: () => number;
+  /**
+   * Per-phase exclusive-write hold observation (the original motivation: reclamation must never
+   * hold the agent DB write lock for a seconds-long span). Fired with the REAL wall-clock
+   * duration of each phase's exclusive window, after it releases. Observation only.
+   */
+  observePhaseHold?: (hold: { durationMs: number; operation: string }) => void;
   /** Test seam for the database owner; defaults to the cached agent-database handle. */
   openDatabase?: (options: OpenClawAgentDatabaseOptions) => OpenClawAgentDatabase;
   plan: PhasedSqliteSessionReclamationPlan;
@@ -157,7 +169,17 @@ export async function runPhasedSqliteSessionReclamation(params: {
   const generation =
     planGeneration(plan) ?? findReclamationLedgerGeneration(database.db, plan.sessionId);
   if (!generation) {
-    throw new Error("Phased session reclamation plan carries no archive generation");
+    // A plan with no archive generation has no archive identity to key a ledger entry on -- the
+    // trajectory-only / empty-transcript row the atomic path reclaims without writing an archive.
+    // The atomic path never needed a generation for it, so reproduce that path exactly instead of
+    // minting a synthetic identity (fourth (iv-3) delta: atomic-matching semantics, no new rule).
+    return await runSqliteSessionReclamation({
+      assertCommitAllowed: params.assertCommitAllowed,
+      diagnostics: params.diagnostics,
+      forceInProcess: params.forceInProcess ?? false,
+      onInProcessCommit: params.onInProcessCommit,
+      plan,
+    });
   }
   const { id } = enqueueReclamationLedgerEntry(database.db, {
     generation,
@@ -180,11 +202,15 @@ export async function runPhasedSqliteSessionReclamation(params: {
     runExclusiveSqliteSessionWrite(
       plan.databaseOptions,
       async () => {
+        const holdStartedAt = Date.now();
         params.assertCommitAllowed?.();
         const value = await run();
         if (operation === "session.reclamation.phase-delete") {
           params.onInProcessCommit?.(database);
         }
+        // Real wall-clock hold (not the injectable ledger clock): the oracle asserts no phase
+        // holds the write lock for a seconds-long span.
+        params.observePhaseHold?.({ durationMs: Date.now() - holdStartedAt, operation });
         return value;
       },
       operation,

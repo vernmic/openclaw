@@ -699,10 +699,12 @@ describe("SQLite historical session disk budget", () => {
           archiveReason: "active-session-cap",
         },
       );
-      const reclamation = await import("./session-accessor.sqlite-reclamation.js");
-      const reclaim = reclamation.runSqliteSessionReclamation;
+      // History-eviction moved to the four-phase path (piece iv-3); the mid-flight mutation now
+      // wraps the phased drive, after the caller built the plan and before the phase-1 guard.
+      const phased = await import("./session-accessor.sqlite-reclamation-phased.js");
+      const drive = phased.runPhasedSqliteSessionReclamation;
       const dispatch = vi
-        .spyOn(reclamation, "runSqliteSessionReclamation")
+        .spyOn(phased, "runPhasedSqliteSessionReclamation")
         .mockImplementationOnce(async (params) => {
           replaceSessionEntrySync(
             { sessionKey, storePath },
@@ -716,7 +718,7 @@ describe("SQLite historical session disk budget", () => {
                   : { [field]: Date.now() }),
             },
           );
-          return await reclaim(params);
+          return await drive(params);
         });
       expect(
         await enforceSqliteSessionHistoryDiskBudget({

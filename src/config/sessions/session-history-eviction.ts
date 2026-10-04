@@ -27,10 +27,10 @@ import {
   readReferencedSessionIds,
 } from "./session-accessor.sqlite-lifecycle-state.js";
 import { refreshSqliteSessionPlannerStatisticsBestEffort } from "./session-accessor.sqlite-maintenance.js";
+import { runPhasedSqliteSessionReclamation } from "./session-accessor.sqlite-reclamation-phased.js";
 import {
   createHistoryEvictionReclamationPlan,
   runExclusiveSqliteSessionReclamation,
-  runSqliteSessionReclamation,
 } from "./session-accessor.sqlite-reclamation.js";
 import { isRecentHistoricalSessionId } from "./session-accessor.sqlite-references.js";
 import {
@@ -582,7 +582,7 @@ async function enforceSessionHistoryMaintenanceSerialized(
           if (!reclamationPlan) {
             return null;
           }
-          const reclaimed = await runSqliteSessionReclamation({
+          const reclaimed = await runPhasedSqliteSessionReclamation({
             diagnostics,
             forceInProcess: false,
             plan: reclamationPlan,

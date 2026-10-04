@@ -25,6 +25,18 @@ import {
   type ResolvedSqliteReadScope,
 } from "./session-accessor.sqlite-scope.js";
 
+/**
+ * The canonical archive-conflict error, shared by the atomic and phased reclamation paths so one
+ * failure class reports ONE text (2026-10-02 08:58Z ruling: match the atomic path's text). The
+ * constructor takes the session id and owns the wording; no caller formats a variant.
+ */
+export class SessionTranscriptArchiveConflictError extends Error {
+  constructor(sessionId: string) {
+    super(`Conflicting SQLite transcript archive for ${sessionId}`);
+    this.name = "SessionTranscriptArchiveConflictError";
+  }
+}
+
 /** Inserts the canonical archive row inside the lifecycle deletion transaction. */
 export function persistSessionTranscriptArchive(
   database: OpenClawAgentDatabase,
@@ -86,7 +98,7 @@ export function persistSessionTranscriptArchive(
     persisted.session_key !== sessionKey ||
     !Buffer.from(persisted.archive_blob).equals(Buffer.from(archive.bytes))
   ) {
-    throw new Error(`Conflicting SQLite transcript archive for ${plan.sessionId}`);
+    throw new SessionTranscriptArchiveConflictError(plan.sessionId);
   }
 }
 

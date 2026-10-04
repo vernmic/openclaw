@@ -245,46 +245,57 @@ it.each([
       }
       return result;
     });
-    const reclaim = reclamation.runSqliteSessionReclamation;
-    vi.spyOn(reclamation, "runSqliteSessionReclamation").mockImplementation(async (params) => {
-      const result = await reclaim(params);
-      if (params.plan.kind === "history-eviction" && params.plan.sessionId === originalId) {
-        expect(
-          readRow(
-            databasePath,
-            "SELECT session_id FROM session_windows WHERE session_id = ?",
-            originalId,
-          ),
-        ).toBeUndefined();
-        expect(
-          readRow(
-            databasePath,
-            "SELECT length(archive_blob) AS bytes FROM session_transcript_archives WHERE session_id = ?",
-            originalId,
-          )?.bytes,
-        ).toBeGreaterThan(0);
-        order.push("canonical archive durable after deletion");
-      }
-      if (victim === "cap-entry" && params.plan.kind === "entry") {
-        expect(result).toMatchObject({ kind: "entry", value: { deleted: true } });
-        expect(
-          readRow(
-            databasePath,
-            "SELECT session_key FROM session_nodes WHERE session_key = ?",
-            sessionKey,
-          ),
-        ).toBeUndefined();
-        expect(
-          readRow(
-            databasePath,
-            "SELECT session_id FROM session_windows WHERE session_id = ?",
-            originalId,
-          ),
-        ).toBeUndefined();
-        order.push("cap-archived entry durably deleted");
-      }
-      return result;
-    });
+    // Path-agnostic observation seam (piece iv-3, delta 3): the entry kind stays atomic while
+    // history-eviction goes phased, but both drive through the ONE shared exclusive-reclamation
+    // wrapper. Observing that shared operation once covers both routes -- no parallel spy set.
+    const exclusive = reclamation.runExclusiveSqliteSessionReclamation;
+    vi.spyOn(reclamation, "runExclusiveSqliteSessionReclamation").mockImplementation(
+      async (run) => {
+        const result = await exclusive(run);
+        if (victim === "history") {
+          const archivedTranscripts = (
+            result as { archivedTranscripts?: Array<{ sessionId: string }> } | null
+          )?.archivedTranscripts;
+          if (archivedTranscripts?.some((archive) => archive.sessionId === originalId)) {
+            expect(
+              readRow(
+                databasePath,
+                "SELECT session_id FROM session_windows WHERE session_id = ?",
+                originalId,
+              ),
+            ).toBeUndefined();
+            expect(
+              readRow(
+                databasePath,
+                "SELECT length(archive_blob) AS bytes FROM session_transcript_archives WHERE session_id = ?",
+                originalId,
+              )?.bytes,
+            ).toBeGreaterThan(0);
+            order.push("canonical archive durable after deletion");
+          }
+        } else if (victim === "cap-entry") {
+          const entry = result as { deleted?: boolean; deletedSessionId?: string } | null;
+          if (entry?.deleted && entry?.deletedSessionId === originalId) {
+            expect(
+              readRow(
+                databasePath,
+                "SELECT session_key FROM session_nodes WHERE session_key = ?",
+                sessionKey,
+              ),
+            ).toBeUndefined();
+            expect(
+              readRow(
+                databasePath,
+                "SELECT session_id FROM session_windows WHERE session_id = ?",
+                originalId,
+              ),
+            ).toBeUndefined();
+            order.push("cap-archived entry durably deleted");
+          }
+        }
+        return result;
+      },
+    );
     const publish = archiveStore.publishSessionStateArchives;
     vi.spyOn(archiveStore, "publishSessionStateArchives").mockImplementation(async (...args) => {
       const result = await publish(...args);

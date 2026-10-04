@@ -34,6 +34,22 @@ vi.mock("./session-accessor.sqlite-reclamation.js", async (importOriginal) => {
   };
 });
 
+vi.mock("./session-accessor.sqlite-reclamation-phased.js", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("./session-accessor.sqlite-reclamation-phased.js")>();
+  return {
+    ...actual,
+    runPhasedSqliteSessionReclamation: async (
+      ...args: Parameters<typeof actual.runPhasedSqliteSessionReclamation>
+    ) => {
+      // The phased route has no archive Worker commit request (its inline drive reads the
+      // caller's materialized bytes), so the commit-boundary hook fires at the drive head.
+      archiveMaterializationHook.beforeCommitRequest?.();
+      return await actual.runPhasedSqliteSessionReclamation(...args);
+    },
+  };
+});
+
 vi.mock("./session-accessor.sqlite-archive.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./session-accessor.sqlite-archive.js")>();
   return {
@@ -188,7 +204,10 @@ describe("SQLite reclamation admission races", () => {
       ]);
       let authorized = true;
       if (checkpoint === "prepare") {
-        archiveMaterializationHook.beforeReclaim = async () => {
+        // Path-agnostic prepare hook: the caller's materialization runs for both the atomic
+        // (entry) and phased (historical-generation) routes, so closing authority here covers
+        // both without a per-route spy.
+        archiveMaterializationHook.beforeMaterialize = async () => {
           await Promise.resolve();
           authorized = false;
         };

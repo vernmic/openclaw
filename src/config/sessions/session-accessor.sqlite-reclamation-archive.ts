@@ -24,7 +24,10 @@ import {
 } from "../../infra/kysely-sync.js";
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { ensureSessionTranscriptArchiveSchema } from "../../state/openclaw-agent-session-transcript-archive-schema.js";
-import { persistSessionTranscriptArchive } from "./session-accessor.sqlite-archive-store.js";
+import {
+  SessionTranscriptArchiveConflictError,
+  persistSessionTranscriptArchive,
+} from "./session-accessor.sqlite-archive-store.js";
 import {
   hashSessionArchiveBytes,
   type MaterializedSessionStateDeletePlan,
@@ -36,15 +39,11 @@ import {
 import { getSessionKysely } from "./session-accessor.sqlite-scope.js";
 
 /**
- * A stored archive that does not match the plan. Terminal: the caller marks the entry `failed`
- * and NEVER advances to a delete -- this is the invariant's last line of defence.
+ * The phased path's name for the ONE shared archive-conflict error. The class and its canonical
+ * text live in the archive store so the atomic persister and this reconciler cannot drift apart
+ * (2026-10-02 08:58Z ruling); this alias keeps the historical export name for the phase tests.
  */
-export class ReclamationArchiveConflictError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "ReclamationArchiveConflictError";
-  }
-}
+export { SessionTranscriptArchiveConflictError as ReclamationArchiveConflictError };
 
 /**
  * Reads the durable identity of an archive row: the stored sha256 and the stored blob's byte
@@ -123,25 +122,21 @@ export function reconcileReclamationArchive(params: {
   });
   if (existing !== undefined) {
     if (existing.sha256 !== stored.sha256) {
-      throw new ReclamationArchiveConflictError(
-        `Reclamation archive conflict for ${plan.sessionId}: stored ${existing.sha256} != planned ${stored.sha256}`,
-      );
+      // One shared constructor: the atomic persister and this reconciler emit the SAME canonical
+      // text for the same failure class (2026-10-02 08:58Z ruling).
+      throw new SessionTranscriptArchiveConflictError(plan.sessionId);
     }
     // A matching digest column cannot prove the stored blob is the planned archive: a truncated
     // or foreign row carrying a copied digest would otherwise pass silently, and the delete would
     // proceed against events this plan never archived. Compare the blob's byte length too.
     if (existing.byteLength !== archive.bytes.byteLength) {
-      throw new ReclamationArchiveConflictError(
-        `Reclamation archive length mismatch for ${plan.sessionId}: stored ${existing.byteLength} bytes != planned ${archive.bytes.byteLength} bytes`,
-      );
+      throw new SessionTranscriptArchiveConflictError(plan.sessionId);
     }
     return "already-archived";
   }
   const derived = hashSessionArchiveBytes(archive.bytes);
   if (derived !== stored.sha256) {
-    throw new ReclamationArchiveConflictError(
-      `Reclamation archive sha256 mismatch for ${plan.sessionId}: derived ${derived} != planned ${stored.sha256}`,
-    );
+    throw new SessionTranscriptArchiveConflictError(plan.sessionId);
   }
   persistSessionTranscriptArchive(database, {
     ...plan,
