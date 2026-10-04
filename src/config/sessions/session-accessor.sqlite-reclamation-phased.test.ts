@@ -149,6 +149,77 @@ describe("phased reclamation helper (piece iv, step 2)", () => {
     expect(materializeCalls).toBe(0);
   });
 
+  it("holds the write lock only for bounded per-phase windows (original motivation: no seconds-long stall)", async () => {
+    const stateDir = tempDirs.make("openclaw-reclamation-phased-hold-");
+    const options = { agentId: "main", env: { OPENCLAW_STATE_DIR: stateDir } };
+    const database = openOpenClawAgentDatabase(options);
+    ensureReclamationLedgerSchema(database.db);
+    const archiveDirectory = path.join(stateDir, "archives");
+    // A sizeable archive stands in for the multi-second materialization the split moves OUT of
+    // the write hold; every phase hold must still finish far below a seconds-long stall.
+    const largeBytes = new Uint8Array(4 * 1024 * 1024).fill(7);
+    const plan: PhasedSqliteSessionReclamationPlan = {
+      databaseOptions: {
+        agentId: "main",
+        env: { OPENCLAW_STATE_DIR: stateDir },
+        path: database.path,
+      },
+      diskBudget: { preserveRecentMs: null },
+      kind: "history-eviction",
+      materializedPlans: [
+        {
+          agentId: "main",
+          archive: {
+            archiveName: "archive.jsonl.zst",
+            bytes: largeBytes,
+            createdAt: 1_700_000_500_000,
+            encoding: "zstd",
+            sha256: hashSessionArchiveBytes(largeBytes),
+          },
+          archiveDirectory,
+          archiveTranscript: true,
+          databasePath: database.path,
+          reason: "deleted",
+          sessionId: SESSION_ID,
+          snapshot: {
+            acpParentStreamEventCount: 0,
+            generation: GENERATION,
+            lastSeq: 1,
+            sessionKey: "key:" + SESSION_ID,
+            sessionUpdatedAt: 1,
+            trajectoryLastSeq: null,
+            transcriptUpdatedAt: 1,
+          },
+        },
+      ],
+      protectedSessionIds: [],
+      sessionId: SESSION_ID,
+    };
+    const holds: Array<{ durationMs: number; operation: string }> = [];
+    const result = await runPhasedSqliteSessionReclamation({
+      deleteReclaimedRows: () => {},
+      now: countingClock(),
+      observePhaseHold: (hold) => holds.push(hold),
+      plan,
+      validateInlineSnapshot: () => {},
+    });
+
+    expect(result).toMatchObject({ kind: "history-eviction", value: { deleted: true } });
+    expect(holds.length).toBeGreaterThan(0);
+    expect(holds.map((hold) => hold.operation)).toEqual(
+      expect.arrayContaining([
+        "session.reclamation.phase-guard",
+        "session.reclamation.phase-archive",
+        "session.reclamation.phase-delete",
+      ]),
+    );
+    for (const hold of holds) {
+      // The reclamation exists to remove the ~9s write hold; a regression that pulls archive
+      // materialization back inside a phase window would blow this bound.
+      expect(hold.durationMs).toBeLessThan(1000);
+    }
+  });
+
   it("re-plans the same session through the same generation without a duplicate archive row", async () => {
     const stateDir = tempDirs.make("openclaw-reclamation-phased-replan-");
     const options = { agentId: "main", env: { OPENCLAW_STATE_DIR: stateDir } };
