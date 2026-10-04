@@ -28,6 +28,9 @@ import { DEFAULT_TERMINAL_DETACH_SECONDS } from "./terminal/session-limits.js";
 
 type GatewayLogger = ReturnType<typeof createSubsystemLogger>;
 const [POST_READY_MAINTENANCE_DELAY_MS, RETAINED_PLUGIN_CLEANUP_DELAY_MS] = [250, 30_000];
+// Recovery is not urgent: an orphaned ledger entry is durable and harms nothing while it waits.
+// Deferring past startup keeps the sweep's exclusive write windows away from a busy gateway.
+const RECLAMATION_ORPHAN_SWEEP_DELAY_MS = 60_000;
 
 type GatewayStartedRuntime = GatewayKernelRuntime & GatewayHttpTransport;
 
@@ -576,6 +579,26 @@ export async function finishGatewayStartup(params: {
         },
         log,
         errorMessage: "retained npm generation cleanup failed",
+      }),
+      // Reclamation ledger recovery (phase-split iv-4). An idle task rather than a direct boot
+      // call: the drive takes exclusive write windows, so it must wait for a quiet gateway instead
+      // of competing with live work. isBusy defers rather than skips, so recovery is never lost.
+      gatewayRuntimeServices.scheduleGatewayIdleTask({
+        delayMs: RECLAMATION_ORPHAN_SWEEP_DELAY_MS,
+        retryDelayMs: RECLAMATION_ORPHAN_SWEEP_DELAY_MS,
+        isClosing: () => lifecycle.closePreludeStarted,
+        isBusy: () => getActiveGatewayRootWorkCount({ excludeCurrent: true }) > 0,
+        run: async () => {
+          const { sweepReclamationOrphansAtBoot } =
+            await import("./server-reclamation-orphan-sweep.js");
+          await sweepReclamationOrphansAtBoot({
+            cfg: cfgAtStart,
+            isClosing: () => lifecycle.closePreludeStarted,
+            log,
+          });
+        },
+        log,
+        errorMessage: "reclamation orphan sweep failed",
       }),
     ]);
   } else {
