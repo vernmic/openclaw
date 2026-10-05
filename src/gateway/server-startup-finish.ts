@@ -17,6 +17,7 @@ import {
   listConfigReloadRefinementPrefixes,
 } from "./config-reload-plan.js";
 import { collectGatewayProcessMemoryUsageMb, finishGatewayRestartTrace } from "./restart-trace.js";
+import { anyAgentSnapshotOverdue } from "./server-agent-db-snapshot-sidecar.js";
 import type { GatewayKernelRuntime } from "./server-kernel-request-runtime.js";
 import { GATEWAY_EVENTS } from "./server-methods-list.js";
 import { refreshConnectedNodeSurfaceCaches } from "./server-methods/nodes.read.js";
@@ -31,6 +32,11 @@ const [POST_READY_MAINTENANCE_DELAY_MS, RETAINED_PLUGIN_CLEANUP_DELAY_MS] = [250
 // Recovery is not urgent: an orphaned ledger entry is durable and harms nothing while it waits.
 // Deferring past startup keeps the sweep's exclusive write windows away from a busy gateway.
 const RECLAMATION_ORPHAN_SWEEP_DELAY_MS = 60_000;
+// Hourly, per Vern's design: the worst case on proven corruption is one hour of lost writes.
+// The retry is short because isBusy defers rather than skips -- a busy hour must not drop the pass.
+const [AGENT_DB_SNAPSHOT_INTERVAL_MS, AGENT_DB_SNAPSHOT_RETRY_MS] = [3_600_000, 300_000];
+/** Past 2x the interval the restore point is overdue and the isBusy deferral stands down. */
+const AGENT_DB_SNAPSHOT_OVERDUE_MS = AGENT_DB_SNAPSHOT_INTERVAL_MS * 2;
 
 type GatewayStartedRuntime = GatewayKernelRuntime & GatewayHttpTransport;
 
@@ -599,6 +605,36 @@ export async function finishGatewayStartup(params: {
         },
         log,
         errorMessage: "reclamation orphan sweep failed",
+      }),
+      // Hourly agent-database snapshot + certification. Replaces the per-open integrity gate, which
+      // cost ~10.6s on a 2 GB file and ran on every worker open (1,501 times on 2026-10-04, all
+      // healthy, zero repairs) while providing no restore point. isBusy keeps the ~21s snapshot off
+      // a busy gateway; the stat gate makes unchanged databases free.
+      gatewayRuntimeServices.scheduleGatewayIdleTask({
+        delayMs: AGENT_DB_SNAPSHOT_INTERVAL_MS,
+        retryDelayMs: AGENT_DB_SNAPSHOT_RETRY_MS,
+        isClosing: () => lifecycle.closePreludeStarted,
+        // Defer while busy, but stand down once a restore point is overdue: deferral is right for a
+        // busy hour and wrong for a busy day, where the pass would never run and nothing would say so.
+        isBusy: () => {
+          if (getActiveGatewayRootWorkCount({ excludeCurrent: true }) === 0) {
+            return false;
+          }
+          return !anyAgentSnapshotOverdue({
+            cfg: cfgAtStart,
+            maxAgeMs: AGENT_DB_SNAPSHOT_OVERDUE_MS,
+          });
+        },
+        run: async () => {
+          const { snapshotAgentDatabases } = await import("./server-agent-db-snapshot-sidecar.js");
+          await snapshotAgentDatabases({
+            cfg: cfgAtStart,
+            isClosing: () => lifecycle.closePreludeStarted,
+            log,
+          });
+        },
+        log,
+        errorMessage: "agent database snapshot pass failed",
       }),
     ]);
   } else {
