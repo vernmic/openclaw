@@ -68,9 +68,8 @@ export const nodePendingWorkHandlers: GatewayRequestHandlers = {
         respondPairingChanged(respond);
         return;
       }
-      const p = params;
       const drained = drainNodePendingWork(nodeId, {
-        maxItems: p.maxItems,
+        maxItems: params.maxItems,
         includeDefaultStatus: true,
         pairingGeneration: generation.key,
       });
@@ -98,8 +97,10 @@ export const nodePendingWorkHandlers: GatewayRequestHandlers = {
         return;
       }
       const wakeLifecycle = captureNodeWakeLifecycle(nodeId, generation.key);
+      const isCurrent = () =>
+        isNodePairingWorkCurrent({ nodeId, generation, lifecycle: wakeLifecycle });
       try {
-        if (!(await isNodePairingWorkCurrent({ nodeId, generation, lifecycle: wakeLifecycle }))) {
+        if (!(await isCurrent())) {
           respondPairingChanged(respond);
           return;
         }
@@ -137,7 +138,7 @@ export const nodePendingWorkHandlers: GatewayRequestHandlers = {
             }
             wakeTriggered = wake.available;
             if (
-              !(await isNodePairingWorkCurrent({ nodeId, generation, lifecycle: wakeLifecycle })) ||
+              !(await isCurrent()) ||
               context.nodeRegistry.getForPairingGeneration(nodeId, generation.key) ||
               !wake.available
             ) {
@@ -145,11 +146,7 @@ export const nodePendingWorkHandlers: GatewayRequestHandlers = {
             }
           }
           if (
-            (await isNodePairingWorkCurrent({
-              nodeId,
-              generation,
-              lifecycle: wakeLifecycle,
-            })) &&
+            (await isCurrent()) &&
             !context.nodeRegistry.getForPairingGeneration(nodeId, generation.key)
           ) {
             const nudge = await maybeSendNodeWakeNudge(nodeId, {
@@ -165,19 +162,13 @@ export const nodePendingWorkHandlers: GatewayRequestHandlers = {
             context.logGateway.warn(
               `node pending wake done node=${nodeId} req=${wakeReqId} connected=false reason=not_connected`,
             );
-          } else if (
-            await isNodePairingWorkCurrent({
-              nodeId,
-              generation,
-              lifecycle: wakeLifecycle,
-            })
-          ) {
+          } else if (await isCurrent()) {
             context.logGateway.info(
               `node pending wake done node=${nodeId} req=${wakeReqId} connected=true`,
             );
           }
         }
-        if (!(await isNodePairingWorkCurrent({ nodeId, generation, lifecycle: wakeLifecycle }))) {
+        if (!(await isCurrent())) {
           if (!queued.deduped) {
             removeNodePendingWorkItem({
               nodeId,

@@ -115,10 +115,10 @@ export const wizardHandlers: GatewayRequestHandlers = {
     const sessionId = randomUUID();
     const flow = params.flow ?? "setup";
     const createSession = () =>
-      flow === "channels"
-        ? new WizardSession((prompter, _signal, wizardSession) =>
-            runHostedWizard((runtime) =>
-              context.channelWizardRunner(
+      new WizardSession((prompter, _signal, wizardSession) =>
+        runHostedWizard((runtime) =>
+          flow === "channels"
+            ? context.channelWizardRunner(
                 {
                   channel: readStringValue(params.channel),
                   onConfigured: (accounts) => wizardSession.setConfiguredAccounts(accounts),
@@ -130,12 +130,8 @@ export const wizardHandlers: GatewayRequestHandlers = {
                 },
                 runtime,
                 prompter,
-              ),
-            ),
-          )
-        : new WizardSession((prompter) =>
-            runHostedWizard((runtime) =>
-              context.wizardRunner(
+              )
+            : context.wizardRunner(
                 {
                   mode: params.mode,
                   workspace: readStringValue(params.workspace),
@@ -144,8 +140,8 @@ export const wizardHandlers: GatewayRequestHandlers = {
                 runtime,
                 prompter,
               ),
-            ),
-          );
+        ),
+      );
     const session = await createAdmittedWizardSession(createSession, flow === "setup");
     if (!session) {
       respondSetupAdmissionBusy(respond);

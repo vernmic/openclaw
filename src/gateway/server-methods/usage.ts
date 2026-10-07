@@ -411,13 +411,8 @@ export const usageHandlers: GatewayRequestHandlers = {
     if (!resolved) {
       return;
     }
-    const { config, key, agentId, sessionId, sessionFile } = resolved;
-
     const timeseries = await loadSessionUsageTimeSeries({
-      sessionId,
-      sessionFile,
-      config,
-      agentId,
+      ...resolved,
       maxPoints: 200,
     });
 
@@ -425,7 +420,7 @@ export const usageHandlers: GatewayRequestHandlers = {
       respond(
         false,
         undefined,
-        errorShape(ErrorCodes.INVALID_REQUEST, `No transcript found for session: ${key}`),
+        errorShape(ErrorCodes.INVALID_REQUEST, `No transcript found for session: ${resolved.key}`),
       );
       return;
     }
@@ -447,15 +442,7 @@ export const usageHandlers: GatewayRequestHandlers = {
     if (!resolved) {
       return;
     }
-    const { config, agentId, sessionId, sessionFile } = resolved;
-
-    const logs = await loadSessionLogs({
-      sessionId,
-      sessionFile,
-      config,
-      agentId,
-      limit,
-    });
+    const logs = await loadSessionLogs({ ...resolved, limit });
 
     respond(true, { logs: logs ?? [] }, undefined);
   },

@@ -391,11 +391,22 @@ export async function prepareModelsListResult(
   const preparedRuntimeAuthMaterializations = preparedProjectionOwner?.authMaterializations;
   // Capture authority again after acquisition and before hydrating a personal projection.
   draft?.assertCurrent();
+  const decisionOwner = () => ({
+    cfg,
+    agentId,
+    metadataSnapshot,
+    preparedAuthStore,
+    accountCatalog: preparedProjectionOwner?.accountCatalog,
+    preparedRuntimeAuthModes,
+    preparedRuntimeAuthMaterializations,
+    pluginRegistry: preparedPluginRegistry,
+    isCurrent,
+    observationConfig: preparedProjectionOwner?.observationConfig,
+  });
   const projector =
     (usedPreloadedCatalog ? params.catalogProjector : undefined) ??
     createGatewayAgentModelCatalogProjector({
-      cfg,
-      agentId,
+      ...decisionOwner(),
       agentDir: sourceOwner?.agentDir,
       workspaceDir,
       snapshot: {
@@ -408,11 +419,6 @@ export async function prepareModelsListResult(
           return snapshot.refreshFailed;
         },
       },
-      metadataSnapshot,
-      preparedAuthStore,
-      accountCatalog: preparedProjectionOwner?.accountCatalog,
-      preparedRuntimeAuthModes,
-      preparedRuntimeAuthMaterializations,
       // A complete catalog and its synthetic-auth probes cross the worker boundary together.
       preparedSyntheticAuthComplete: publishedOwner
         ? isPreparedModelCatalogFull(publishedOwner.modelCatalog)
@@ -424,9 +430,6 @@ export async function prepareModelsListResult(
           : (draft?.owner ?? params.requesterProfileId),
       ...(view === "provider-config" ? {} : profiles),
       routeResolverFactory: params.routeResolverFactory,
-      pluginRegistry: preparedPluginRegistry,
-      isCurrent,
-      observationConfig: preparedProjectionOwner?.observationConfig,
     });
   if (view !== "provider-config") {
     await projector.prepareSelectedAccountCatalog(
@@ -542,17 +545,8 @@ export async function prepareModelsListResult(
       ...(providerOutcomes?.length ? { providerOutcomes } : {}),
     };
     const inventoryProjector = createGatewayAgentModelCatalogProjector({
-      cfg,
-      agentId,
+      ...decisionOwner(),
       snapshot: inventorySnapshot,
-      metadataSnapshot,
-      preparedAuthStore,
-      accountCatalog: preparedProjectionOwner?.accountCatalog,
-      preparedRuntimeAuthModes,
-      preparedRuntimeAuthMaterializations,
-      pluginRegistry: preparedPluginRegistry,
-      isCurrent,
-      observationConfig: preparedProjectionOwner?.observationConfig,
       ...(params.routeResolverFactory ? { routeResolverFactory: params.routeResolverFactory } : {}),
     });
     const inventory = await inventoryProjector.projectCatalog();

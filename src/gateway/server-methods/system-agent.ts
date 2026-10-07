@@ -308,13 +308,14 @@ export const systemAgentHandlers: GatewayRequestHandlers = {
     },
   ),
   "openclaw.chat": async ({ params: rawParams, respond, client, context }) => {
+    const reject = (error: ReturnType<typeof errorShape>) => respond(false, undefined, error);
     const params = sanitizeSystemAgentChatParams(rawParams);
     if (!assertValidParams(params, validateSystemAgentChatParams, "openclaw.chat", respond)) {
       return;
     }
     const inputError = getSystemAgentChatInputError(params);
     if (inputError) {
-      respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, inputError));
+      reject(errorShape(ErrorCodes.INVALID_REQUEST, inputError));
       return;
     }
     const pending = await runSystemAgentGatewayTask(async () => {
@@ -327,23 +328,17 @@ export const systemAgentHandlers: GatewayRequestHandlers = {
       });
       if (!ownerKey) {
         if (isGatewayClientProfilePending(client)) {
-          respond(false, undefined, authenticatedProfileUnavailableError());
+          reject(authenticatedProfileUnavailableError());
           return undefined;
         }
-        respond(
-          false,
-          undefined,
-          errorShape(ErrorCodes.INVALID_REQUEST, "OpenClaw caller identity unavailable."),
-        );
+        reject(errorShape(ErrorCodes.INVALID_REQUEST, "OpenClaw caller identity unavailable."));
         return undefined;
       }
       const boundSession = sessions.get(sessionId);
       if (boundSession && boundSession.ownerKey !== ownerKey) {
         // Structured invalidation details let clients with a persisted id mint a
         // fresh one instead of retry-looping against the foreign live session.
-        respond(
-          false,
-          undefined,
+        reject(
           errorShape(ErrorCodes.INVALID_REQUEST, "OpenClaw session belongs to another caller.", {
             details: buildSystemAgentSessionInvalidatedErrorDetails(),
           }),
@@ -365,9 +360,7 @@ export const systemAgentHandlers: GatewayRequestHandlers = {
       }
       let session = sessions.get(sessionId);
       if ((params.wizardAnswer !== undefined || params.wizardCancel !== undefined) && !session) {
-        respond(
-          false,
-          undefined,
+        reject(
           errorShape(
             ErrorCodes.INVALID_REQUEST,
             params.wizardCancel !== undefined
@@ -391,9 +384,7 @@ export const systemAgentHandlers: GatewayRequestHandlers = {
           runtime: defaultRuntime,
         });
         if (!inference.ok) {
-          respond(
-            false,
-            undefined,
+          reject(
             errorShape(
               ErrorCodes.UNAVAILABLE,
               `OpenClaw requires working inference: ${inference.error}`,
@@ -458,7 +449,7 @@ export const systemAgentHandlers: GatewayRequestHandlers = {
           if (!isSystemAgentInferenceUnavailableError(error)) {
             throw error;
           }
-          respond(false, undefined, errorShape(ErrorCodes.UNAVAILABLE, error.message));
+          reject(errorShape(ErrorCodes.UNAVAILABLE, error.message));
           return undefined;
         }
         // Passive welcomes are ephemeral; an external-edit alert must survive
@@ -552,18 +543,14 @@ export const systemAgentHandlers: GatewayRequestHandlers = {
           input: params,
         });
         if (!turnReply) {
-          respond(
-            false,
-            undefined,
-            errorShape(ErrorCodes.INVALID_REQUEST, "OpenClaw chat input is missing."),
-          );
+          reject(errorShape(ErrorCodes.INVALID_REQUEST, "OpenClaw chat input is missing."));
           return undefined;
         }
         reply = turnReply;
       } catch (error) {
         persistSystemAgentEngineHistory(session.engine, historyStart);
         if (error instanceof SystemAgentWizardAnswerError) {
-          respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, error.message));
+          reject(errorShape(ErrorCodes.INVALID_REQUEST, error.message));
           return undefined;
         }
         if (!isSystemAgentInferenceUnavailableError(error)) {
@@ -581,9 +568,7 @@ export const systemAgentHandlers: GatewayRequestHandlers = {
         } catch {
           // The inference error is authoritative; cleanup stays best-effort.
         }
-        respond(
-          false,
-          undefined,
+        reject(
           errorShape(ErrorCodes.UNAVAILABLE, error.message, {
             details: buildSystemAgentSessionInvalidatedErrorDetails(),
           }),

@@ -15,7 +15,7 @@ import {
 } from "../../infra/gateway-suspend-coordinator.js";
 import { getGatewayProcessInstanceId } from "../process-instance.js";
 import { createGatewayServerActiveWorkInspectors } from "../server-active-work.js";
-import type { GatewayRequestHandlers } from "./types.js";
+import type { GatewayRequestHandlers, RespondFn } from "./types.js";
 
 function invalidParams(method: string) {
   return errorShape(ErrorCodes.INVALID_REQUEST, `invalid ${method} params`);
@@ -27,6 +27,28 @@ function schedulerRecoveryError(retryAfterMs: number) {
     retryAfterMs,
     details: { reason: "scheduler-resume-failed" },
   });
+}
+
+function respondSuspendStatus(
+  result: ReturnType<typeof prepareGatewaySuspend> | ReturnType<typeof getGatewaySuspendStatus>,
+  respond: RespondFn,
+  conflictMessage: string,
+) {
+  if (result.status === "conflict") {
+    respond(
+      false,
+      undefined,
+      errorShape(ErrorCodes.UNAVAILABLE, conflictMessage, {
+        retryable: true,
+        retryAfterMs: Math.max(0, result.expiresAtMs - Date.now()),
+        details: { reason: "gateway-suspension-conflict", expiresAtMs: result.expiresAtMs },
+      }),
+    );
+  } else if (result.status === "recovering") {
+    respond(false, undefined, schedulerRecoveryError(result.retryAfterMs));
+  } else {
+    respond(true, result);
+  }
 }
 
 export const suspendHandlers: GatewayRequestHandlers = {
@@ -81,23 +103,7 @@ export const suspendHandlers: GatewayRequestHandlers = {
       inspect: createGatewayServerActiveWorkInspectors(context),
       warn: (message) => context.logGateway.warn(message),
     });
-    if (result.status === "conflict") {
-      respond(
-        false,
-        undefined,
-        errorShape(ErrorCodes.UNAVAILABLE, "another gateway suspension is already prepared", {
-          retryable: true,
-          retryAfterMs: Math.max(0, result.expiresAtMs - Date.now()),
-          details: { reason: "gateway-suspension-conflict", expiresAtMs: result.expiresAtMs },
-        }),
-      );
-      return;
-    }
-    if (result.status === "recovering") {
-      respond(false, undefined, schedulerRecoveryError(result.retryAfterMs));
-      return;
-    }
-    respond(true, result);
+    respondSuspendStatus(result, respond, "another gateway suspension is already prepared");
   },
   "gateway.suspend.status": async ({ respond, params }) => {
     if (!validateGatewaySuspendStatusParams(params)) {
@@ -106,23 +112,7 @@ export const suspendHandlers: GatewayRequestHandlers = {
     }
     const suspensionId = params.suspensionId.trim();
     const result = getGatewaySuspendStatus(suspensionId, params.includeLifecycle === true);
-    if (result.status === "conflict") {
-      respond(
-        false,
-        undefined,
-        errorShape(ErrorCodes.UNAVAILABLE, "a different gateway suspension is prepared", {
-          retryable: true,
-          retryAfterMs: Math.max(0, result.expiresAtMs - Date.now()),
-          details: { reason: "gateway-suspension-conflict", expiresAtMs: result.expiresAtMs },
-        }),
-      );
-      return;
-    }
-    if (result.status === "recovering") {
-      respond(false, undefined, schedulerRecoveryError(result.retryAfterMs));
-      return;
-    }
-    respond(true, result);
+    respondSuspendStatus(result, respond, "a different gateway suspension is prepared");
   },
   "gateway.suspend.resume": async ({ respond, params }) => {
     if (!validateGatewaySuspendResumeParams(params)) {

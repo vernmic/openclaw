@@ -62,6 +62,10 @@ async function handleSessionGoalMutation(
       );
       return;
     }
+    const sessionChanged = () =>
+      new SessionMutationAuthorizationChangedError(
+        errorShape(ErrorCodes.INVALID_REQUEST, "Session changed before its Goal update; retry."),
+      );
     const assertCurrent = () => {
       options.sessionMutationCommitGuard?.();
       authorization.authorization?.assertCurrent();
@@ -79,9 +83,7 @@ async function handleSessionGoalMutation(
         current.entry.sessionId !== target.entry.sessionId ||
         current.entry.lifecycleRevision !== target.entry.lifecycleRevision
       ) {
-        throw new SessionMutationAuthorizationChangedError(
-          errorShape(ErrorCodes.INVALID_REQUEST, "Session changed before its Goal update; retry."),
-        );
+        throw sessionChanged();
       }
       const ownershipError = resolvePluginSessionOwnershipError({
         action: "patch",

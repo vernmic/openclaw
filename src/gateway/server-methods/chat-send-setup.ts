@@ -106,14 +106,15 @@ export async function prepareAndAdmitChatSend(
       return undefined;
     }
   }
-  const shouldAdmit = await runChatSendPreAdmission({
+  const preparation = {
     request: normalizedRequest.value,
     session: loadedSession.value,
     respond,
     context,
     client,
     assertCurrent,
-  });
+  };
+  const shouldAdmit = await runChatSendPreAdmission(preparation);
   if (!shouldAdmit) {
     return undefined;
   }
@@ -127,25 +128,18 @@ export async function prepareAndAdmitChatSend(
   let admitted: Awaited<ReturnType<typeof admitChatSend>> | undefined;
   try {
     const nativeRestriction = await prepareChatSendNativeRuntimeRestriction({
-      request: normalizedRequest.value,
+      ...preparation,
       session,
-      client,
-      context,
-      assertCurrent,
     });
     if (nativeRestriction) {
       respond(false, undefined, nativeRestriction);
       return undefined;
     }
     admitted = await admitChatSend({
-      request: normalizedRequest.value,
+      ...preparation,
       session,
-      respond,
-      context,
-      client,
       onAdmissionOwned,
       hasCurrentClientAuthority,
-      assertCurrent,
     });
     if (!admitted.ok) {
       return undefined;

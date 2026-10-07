@@ -296,9 +296,7 @@ export function buildAgentSessionPatch(
   return {
     patch,
     spawnedBy: freshSpawnedBy,
-    groupId: nextGroup.groupId,
-    groupChannel: nextGroup.groupChannel,
-    groupSpace: nextGroup.groupSpace,
+    ...nextGroup,
     freshSessionRotatedSinceLoad,
     isNewSession: reuse.isNewSession,
     rotatedSessionId: freshRotatedSessionId,

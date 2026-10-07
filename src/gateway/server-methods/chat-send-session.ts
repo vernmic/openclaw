@@ -370,11 +370,10 @@ export async function prepareChatSendNativeRuntimeRestriction(params: {
   params.assertCurrent?.();
   const scope = { agentId, sessionKey, storePath: session.storePath };
   const snapshot = loadReplySessionInitializationSnapshot(scope);
+  const sessionChanged = () =>
+    errorShape(ErrorCodes.INVALID_REQUEST, "Session changed before native confirmation. Retry.");
   if (snapshot.currentEntry) {
-    return errorShape(
-      ErrorCodes.INVALID_REQUEST,
-      "Session changed before native confirmation. Retry.",
-    );
+    return sessionChanged();
   }
   const prepared = await prepareChatSendSessionEntry({
     cfg,
@@ -439,10 +438,7 @@ export async function prepareChatSendNativeRuntimeRestriction(params: {
     },
   });
   if (!committed.ok) {
-    return errorShape(
-      ErrorCodes.INVALID_REQUEST,
-      "Session changed before native confirmation. Retry.",
-    );
+    return sessionChanged();
   }
   await recordSessionCreated(cfg, { agentId, sessionKey, entry: committed.sessionEntry });
   emitSessionsChanged(context, { agentId, sessionKey, reason: "create" });

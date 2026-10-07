@@ -108,8 +108,9 @@ export const chatMessageGetHandlers: GatewayRequestHandlers = {
     const session = loadGatewaySessionEntryReadOnly(sessionKey, { agentId: requestedAgentId }, cfg);
     const { agentId: sessionAgentId, storePath, entry, canonicalKey } = session;
     const sessionId = entry?.sessionId;
+    const respondNotFound = () => respond(true, { ok: false, unavailableReason: "not_found" });
     if (!sessionId) {
-      respond(true, { ok: false, unavailableReason: "not_found" });
+      respondNotFound();
       return;
     }
     const canReadSession = (
@@ -170,7 +171,7 @@ export const chatMessageGetHandlers: GatewayRequestHandlers = {
         return;
       }
       if (!pending) {
-        respond(true, { ok: false, unavailableReason: "not_found" });
+        respondNotFound();
         return;
       }
       const resolveCronJobName = await prepareForwardedMessageCronJobNameResolver(
@@ -229,7 +230,7 @@ export const chatMessageGetHandlers: GatewayRequestHandlers = {
       return;
     }
     if (!visible) {
-      respond(true, { ok: false, unavailableReason: "not_found" });
+      respondNotFound();
       return;
     }
     if (resolved.oversized) {

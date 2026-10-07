@@ -39,6 +39,13 @@ const sessionGitHubFailureMessages = {
   "sessions.github.confirm": "GitHub publication confirmation failed.",
 };
 
+function publicationStateUnavailableError() {
+  return errorShape(
+    ErrorCodes.UNAVAILABLE,
+    "GitHub publication state is unavailable; retry after Gateway startup.",
+  );
+}
+
 function defineSessionGitHubMethod<Method extends SessionGitHubMethod>(
   ...[method, validate, handler]: Parameters<typeof defineValidatedGatewayMethod<Method>>
 ) {
@@ -218,14 +225,7 @@ export const sessionsGitHubHandlers: GatewayRequestHandlers = {
       const read = await prepareGitHubPublicationOptionsRead(options, options.params);
       const coordinator = options.context.githubPublicationService;
       if (!coordinator) {
-        options.respond(
-          false,
-          undefined,
-          errorShape(
-            ErrorCodes.UNAVAILABLE,
-            "GitHub publication state is unavailable; retry after Gateway startup.",
-          ),
-        );
+        options.respond(false, undefined, publicationStateUnavailableError());
         return;
       }
       let shared = null;
@@ -279,14 +279,7 @@ export const sessionsGitHubHandlers: GatewayRequestHandlers = {
       const read = await prepareGitHubPublicationOptionsRead(options, options.params);
       const service = options.context.githubPublicationService;
       if (!service) {
-        options.respond(
-          false,
-          undefined,
-          errorShape(
-            ErrorCodes.UNAVAILABLE,
-            "GitHub publication state is unavailable; retry after Gateway startup.",
-          ),
-        );
+        options.respond(false, undefined, publicationStateUnavailableError());
         return;
       }
       const prepared =

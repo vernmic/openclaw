@@ -80,22 +80,22 @@ const mediaDocumentContextLoader = createLazyImportLoader(
 );
 
 async function handleChatSendWithOptions(
-  {
+  handlerOptions: GatewayRequestHandlerOptions,
+  onAdmissionOwned?: () => Promise<boolean>,
+  externalAuthorityAdmission?: ChatSendExternalAuthorityAdmission,
+  options?: ChatSendInternalOptions,
+): Promise<void> {
+  const {
     req,
-    params,
     respond,
     context,
     client,
     hasCurrentClientAuthority,
     sessionMutationAuthorization,
     sessionMutationCommitGuard,
-  }: GatewayRequestHandlerOptions,
-  onAdmissionOwned?: () => Promise<boolean>,
-  externalAuthorityAdmission?: ChatSendExternalAuthorityAdmission,
-  options?: ChatSendInternalOptions,
-): Promise<void> {
+  } = handlerOptions;
   const setup = await prepareAndAdmitChatSend(
-    { params, respond, context, client, hasCurrentClientAuthority, sessionMutationAuthorization },
+    handlerOptions,
     onAdmissionOwned,
     options,
   );

@@ -305,6 +305,13 @@ export const sessionCompactHandlers: GatewayRequestHandlers = {
           }
 
           const operationId = randomUUID();
+          const emitCompacted = (compacted: boolean) =>
+            emitSessionsChanged(context, {
+              sessionKey: target.canonicalKey,
+              agentId: target.agentId,
+              reason: "compact",
+              compacted,
+            });
           if (maxLines !== undefined) {
             const trimResult = await trimSessionTranscriptForManualCompact(transcriptScope, {
               maxLines,
@@ -328,12 +335,7 @@ export const sessionCompactHandlers: GatewayRequestHandlers = {
               undefined,
             );
             if (trimResult.compacted) {
-              emitSessionsChanged(context, {
-                sessionKey: target.canonicalKey,
-                agentId: target.agentId,
-                reason: "compact",
-                compacted: true,
-              });
+              emitCompacted(true);
             }
             return;
           }
@@ -461,12 +463,7 @@ export const sessionCompactHandlers: GatewayRequestHandlers = {
             undefined,
           );
           if (result.ok) {
-            emitSessionsChanged(context, {
-              sessionKey: target.canonicalKey,
-              agentId: target.agentId,
-              reason: "compact",
-              compacted: result.compacted,
-            });
+            emitCompacted(result.compacted);
           }
         },
       });

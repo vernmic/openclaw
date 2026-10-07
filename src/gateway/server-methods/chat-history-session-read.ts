@@ -46,13 +46,10 @@ export async function prepareChatHistorySessionRead({
   requestedSessionId?: string;
   retainedSessionId?: string;
 }) {
+  const unavailable = (message: string) => respondChatHistoryUnavailable(method, respond, message);
   const rowProjection = getSessionRowProjection(context);
   if (!rowProjection) {
-    respondChatHistoryUnavailable(
-      method,
-      respond,
-      "session rows are initializing; reload the conversation",
-    );
+    unavailable("session rows are initializing; reload the conversation");
     return undefined;
   }
   const queries = (cfg: OpenClawConfig) => {
@@ -162,17 +159,13 @@ export async function prepareChatHistorySessionRead({
           if (!(error instanceof SessionMutationFactsUnavailableError)) {
             throw error;
           }
-          respondChatHistoryUnavailable(method, respond, error.message);
+          unavailable(error.message);
           return undefined;
         }
         // Excluded metadata can refuse a read, never authorize transcript delivery.
         if (excludedEntry) {
           if (authorizeSharing({ ...current, entry: excludedEntry }, read)) {
-            respondChatHistoryUnavailable(
-              method,
-              respond,
-              "session changed while reading history; reload the conversation",
-            );
+            unavailable("session changed while reading history; reload the conversation");
           }
           return undefined;
         }
@@ -195,11 +188,7 @@ export async function prepareChatHistorySessionRead({
               (entry.sessionStartedAt !== undefined &&
                 currentEntry.sessionStartedAt !== entry.sessionStartedAt))))
       ) {
-        respondChatHistoryUnavailable(
-          method,
-          respond,
-          "session changed while reading history; reload the conversation",
-        );
+        unavailable("session changed while reading history; reload the conversation");
         return undefined;
       }
       const sharing = authorizeSharing(current, read);
@@ -242,11 +231,7 @@ export async function prepareChatHistorySessionRead({
         });
         try {
           if (!(await publication.verify())) {
-            respondChatHistoryUnavailable(
-              method,
-              respond,
-              "retained transcript changed while reading history",
-            );
+            unavailable("retained transcript changed while reading history");
             return;
           }
           signal?.throwIfAborted();
@@ -261,11 +246,7 @@ export async function prepareChatHistorySessionRead({
                 current.sourcePath !== storePath)) ||
             (publication.requireCurrentSession && target?.entry.sessionId !== retainedSessionId)
           ) {
-            respondChatHistoryUnavailable(
-              method,
-              respond,
-              "retained session changed while reading history",
-            );
+            unavailable("retained session changed while reading history");
             return;
           }
           const sharing = authorizeSharingFacts(
@@ -292,11 +273,7 @@ export async function prepareChatHistorySessionRead({
             visibility !== publication.sharing.visibility ||
             sharingRole !== publication.sharing.sharingRole
           ) {
-            respondChatHistoryUnavailable(
-              method,
-              respond,
-              "session access changed while reading history",
-            );
+            unavailable("session access changed while reading history");
             return;
           }
           // Retained facts and current caller policy authorize the final synchronous publication.
@@ -314,7 +291,7 @@ export async function prepareChatHistorySessionRead({
   } catch (error) {
     excluded?.release();
     if (error instanceof SessionMutationFactsUnavailableError) {
-      respondChatHistoryUnavailable(method, respond, error.message);
+      unavailable(error.message);
       return undefined;
     }
     throw error;

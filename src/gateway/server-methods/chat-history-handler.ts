@@ -125,6 +125,13 @@ export async function handleChatHistoryRequest({
   if (!selection) {
     return;
   }
+  const respondReadError = (error: unknown) => {
+    const message = resolveSessionHistoryUnavailableMessage(error);
+    if (message === undefined) {
+      throw error;
+    }
+    respondChatHistoryUnavailable(method, respond, message);
+  };
   try {
     const { selectedSession, entry, queries, readCurrentSharing, rowProjection } = selection;
     const { cfg, agentId: sessionAgentId, storePath, canonicalKey } = selectedSession;
@@ -280,11 +287,7 @@ export async function handleChatHistoryRequest({
             },
           );
     } catch (error) {
-      const unavailableMessage = resolveSessionHistoryUnavailableMessage(error);
-      if (unavailableMessage === undefined) {
-        throw error;
-      }
-      respondChatHistoryUnavailable(method, respond, unavailableMessage);
+      respondReadError(error);
       return;
     }
     const responsePage = historyPage.encodedResponse
@@ -502,11 +505,7 @@ export async function handleChatHistoryRequest({
               signal,
             );
           } catch (error) {
-            const unavailableMessage = resolveSessionHistoryUnavailableMessage(error);
-            if (unavailableMessage === undefined) {
-              throw error;
-            }
-            respondChatHistoryUnavailable(method, respond, unavailableMessage);
+            respondReadError(error);
             return undefined;
           }
           return withReadySessionRows(rowProjection, queries, (publicationRead) => {

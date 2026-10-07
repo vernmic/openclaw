@@ -170,15 +170,8 @@ function publicRequest(params: {
   };
 }
 
-function invalidPairingAccount(respond: RespondFn, channel: string, accountId: string): void {
-  respond(
-    false,
-    undefined,
-    errorShape(
-      ErrorCodes.INVALID_REQUEST,
-      `channel account does not use DM pairing: ${channel}:${accountId}`,
-    ),
-  );
+function invalidPairingRequest(respond: RespondFn, message: string): void {
+  respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, message));
 }
 
 function respondPairingFailure(respond: RespondFn, error: unknown): void {
@@ -312,7 +305,10 @@ export const channelPairingHandlers: GatewayRequestHandlers = {
         return;
       }
       if (!account?.plugin.pairing) {
-        invalidPairingAccount(respond, params.channel, params.accountId);
+        invalidPairingRequest(
+          respond,
+          `channel account does not use DM pairing: ${params.channel}:${params.accountId}`,
+        );
         return;
       }
       try {
@@ -323,11 +319,7 @@ export const channelPairingHandlers: GatewayRequestHandlers = {
           pairingAdapter: account.plugin.pairing,
         });
         if (!approved) {
-          respond(
-            false,
-            undefined,
-            errorShape(ErrorCodes.INVALID_REQUEST, "pending DM access request no longer exists"),
-          );
+          invalidPairingRequest(respond, "pending DM access request no longer exists");
           return;
         }
 
@@ -406,7 +398,10 @@ export const channelPairingHandlers: GatewayRequestHandlers = {
         return;
       }
       if (!account) {
-        invalidPairingAccount(respond, params.channel, params.accountId);
+        invalidPairingRequest(
+          respond,
+          `channel account does not use DM pairing: ${params.channel}:${params.accountId}`,
+        );
         return;
       }
       await respondUnavailableOnThrow(respond, async () => {
@@ -416,11 +411,7 @@ export const channelPairingHandlers: GatewayRequestHandlers = {
           requestId: params.requestId,
         });
         if (!dismissed) {
-          respond(
-            false,
-            undefined,
-            errorShape(ErrorCodes.INVALID_REQUEST, "pending DM access request no longer exists"),
-          );
+          invalidPairingRequest(respond, "pending DM access request no longer exists");
           return;
         }
         respond(
