@@ -613,6 +613,10 @@ export async function finishGatewayStartup(params: {
       gatewayRuntimeServices.scheduleGatewayIdleTask({
         delayMs: AGENT_DB_SNAPSHOT_INTERVAL_MS,
         retryDelayMs: AGENT_DB_SNAPSHOT_RETRY_MS,
+        // Without repeatDelayMs this primitive is one-shot, so the "hourly" pass ran once per
+        // gateway start (2026-10-06). The overdue guard below stays: with recurrence restored, a
+        // permanently busy gateway can starve the retry loop, which is what it exists to break.
+        repeatDelayMs: AGENT_DB_SNAPSHOT_INTERVAL_MS,
         isClosing: () => lifecycle.closePreludeStarted,
         // Defer while busy, but stand down once a restore point is overdue: deferral is right for a
         // busy hour and wrong for a busy day, where the pass would never run and nothing would say so.
@@ -629,6 +633,7 @@ export async function finishGatewayStartup(params: {
           const { snapshotAgentDatabases } = await import("./server-agent-db-snapshot-sidecar.js");
           await snapshotAgentDatabases({
             cfg: cfgAtStart,
+            intervalMs: AGENT_DB_SNAPSHOT_INTERVAL_MS,
             isClosing: () => lifecycle.closePreludeStarted,
             log,
           });

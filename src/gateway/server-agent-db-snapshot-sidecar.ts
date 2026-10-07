@@ -28,6 +28,12 @@ export async function snapshotAgentDatabases(params: {
   };
   env?: NodeJS.ProcessEnv;
   isClosing?: () => boolean;
+  /**
+   * The recurrence interval, reported as next-due in the summary line. Fizban's addition
+   * (2026-10-06): the summary proves a pass EXISTED; next-due proves the recurrence has CONTINUITY,
+   * because a recurrence that dies shows up as a summary line with no successor within one interval.
+   */
+  intervalMs?: number;
   /** Injected for tests; defaults to halting the process on proven corruption. */
   onProvenCorruption?: (outcome: Extract<AgentDbSnapshotOutcome, { kind: "corrupt" }>) => void;
 }): Promise<void> {
@@ -95,11 +101,16 @@ export async function snapshotAgentDatabases(params: {
     }
   }
   // One line per pass, unconditionally. This is the only positive evidence that the cycle executed.
+  const nextDue =
+    params.intervalMs === undefined
+      ? ""
+      : `; next due ${new Date(Date.now() + params.intervalMs).toISOString()}`;
   params.log.info(
     `agent-db snapshot pass done in ${Date.now() - startedAt}ms: ` +
       `${tally.certified} certified, ${tally.unchanged} unchanged, ${tally.absent} absent` +
       (tally.inconclusive > 0 ? `, ${tally.inconclusive} inconclusive` : "") +
-      (tally["snapshot-suspect"] > 0 ? `, ${tally["snapshot-suspect"]} suspect` : ""),
+      (tally["snapshot-suspect"] > 0 ? `, ${tally["snapshot-suspect"]} suspect` : "") +
+      nextDue,
   );
 }
 

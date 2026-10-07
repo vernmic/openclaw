@@ -8,10 +8,21 @@ export type GatewayIdleTaskHandle = {
   stop: () => void | Promise<void>;
 };
 
-/** Schedules one low-priority task, retrying until the gateway has no active request roots. */
+/**
+ * Schedules one low-priority task, retrying until the gateway has no active request roots.
+ *
+ * Pass `repeatDelayMs` to make it RECUR instead. Without it the task is one-shot by construction:
+ * the initial `schedule(delayMs)` arms a single attempt, `schedule(retryDelayMs)` re-arms only while
+ * busy, and nothing re-arms after a run completes. A caller that wants an hourly pass and supplies
+ * only `delayMs: 3_600_000` gets one pass per process lifetime -- which is exactly what happened to
+ * the agent-db snapshot sidecar (2026-10-06: one certification burst per gateway start, while the
+ * databases it watches changed every hour).
+ */
 export function scheduleGatewayIdleTask(params: {
   delayMs: number;
   retryDelayMs: number;
+  /** Set to re-arm after each completed run. Omit to keep one-shot semantics. */
+  repeatDelayMs?: number;
   isClosing: () => boolean;
   isBusy: () => boolean;
   run: () => Promise<void>;
@@ -26,11 +37,23 @@ export function scheduleGatewayIdleTask(params: {
     if (isClosing()) {
       return;
     }
-    // Newly admitted request work takes priority over maintenance.
+    // Newly admitted request work takes priority over maintenance. The busy branch returns before
+    // the re-arm below, because the retry IS the next attempt -- arming both would leave two timers
+    // with only the later one tracked by `timer`, so stop() would miss one.
     if (params.isBusy()) {
       schedule(params.retryDelayMs);
-    } else {
+      return;
+    }
+    try {
       await params.run();
+    } finally {
+      // Re-arm on failure as well as success, deliberately. Re-arming only on success means one
+      // transient throw silently ends the recurrence forever -- the same class of defect the
+      // repeatDelayMs option exists to fix. A persistently failing task logs every interval, which
+      // is noisy and visible, rather than quiet and dead.
+      if (params.repeatDelayMs !== undefined) {
+        schedule(params.repeatDelayMs);
+      }
     }
   };
   const schedule = (delayMs: number) => {
