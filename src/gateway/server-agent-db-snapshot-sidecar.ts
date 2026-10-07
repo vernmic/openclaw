@@ -32,6 +32,20 @@ export async function snapshotAgentDatabases(params: {
   onProvenCorruption?: (outcome: Extract<AgentDbSnapshotOutcome, { kind: "corrupt" }>) => void;
 }): Promise<void> {
   const halt = params.onProvenCorruption ?? haltOnProvenCorruption(params.log);
+  // Tally every outcome so the pass itself is observable. Without this an all-unchanged pass logs
+  // NOTHING, and "ran hourly and found nothing" is indistinguishable from "did not run for five
+  // hours" -- which is exactly what the 2026-10-05 production log could not answer (16
+  // certifications clustered in two hours, silence in between, no way to tell which). Evidence that
+  // the replacement runs on schedule is a precondition for removing the per-open integrity gate.
+  const tally: Record<AgentDbSnapshotOutcome["kind"], number> = {
+    absent: 0,
+    certified: 0,
+    corrupt: 0,
+    inconclusive: 0,
+    "snapshot-suspect": 0,
+    unchanged: 0,
+  };
+  const startedAt = Date.now();
   for (const agentId of listAgentIds(params.cfg)) {
     if (params.isClosing?.()) {
       return;
@@ -45,6 +59,7 @@ export async function snapshotAgentDatabases(params: {
     let outcome: AgentDbSnapshotOutcome;
     try {
       outcome = snapshotAndCertifyAgentDatabase({ agentId, databasePath, snapshotDir });
+      tally[outcome.kind] += 1;
     } catch (error) {
       // One agent's failure must not starve the rest, exactly as in the orphan sweep.
       params.log.warn(`agent-db snapshot failed for agent ${agentId}: ${String(error)}`);
@@ -79,6 +94,13 @@ export async function snapshotAgentDatabases(params: {
         return;
     }
   }
+  // One line per pass, unconditionally. This is the only positive evidence that the cycle executed.
+  params.log.info(
+    `agent-db snapshot pass done in ${Date.now() - startedAt}ms: ` +
+      `${tally.certified} certified, ${tally.unchanged} unchanged, ${tally.absent} absent` +
+      (tally.inconclusive > 0 ? `, ${tally.inconclusive} inconclusive` : "") +
+      (tally["snapshot-suspect"] > 0 ? `, ${tally["snapshot-suspect"]} suspect` : ""),
+  );
 }
 
 /**
