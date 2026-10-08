@@ -178,4 +178,115 @@ describe("agent database snapshot and certification", () => {
     const dir = tempDirs.make("agent-db-snapshot-age-");
     expect(readCertifiedSnapshotAgeMs(join(dir, "snapshots"))).toBeUndefined();
   });
+
+  // Re-keyed from openclaw-agent-db.test.ts on 2026-10-07, when Option B scoped the steady-state
+  // agent open to foreign_key_check only (ruling: Fizban + Astinus; acceptance: Vern). Five tests
+  // there asserted that a physical open detects, refuses, or repairs physical index-btree drift.
+  // Detection and refusal move HERE, to the hourly pass. Repair is NOT re-keyed -- it was dropped
+  // on purpose, and the call-site comment records that. These tests are what keeps the guarantee
+  // relocated rather than lost.
+  describe("physical index drift (re-keyed from the per-open gate)", () => {
+    /**
+     * Build an index btree over one column, then rewrite its schema TEXT to claim different
+     * columns. The text looks canonical, so a schema-shape comparison sees nothing; only a
+     * whole-file `integrity_check` reports `row N missing from index ...`.
+     *
+     * Same recipe as `createCacheExpiryIndexPhysicalDrift` in openclaw-agent-db.test.ts, which is
+     * how the re-keyed tests used to exercise this through the open path.
+     */
+    function createPhysicalIndexDrift(databasePath: string): void {
+      const db = new DatabaseSync(databasePath);
+      try {
+        db.exec(`
+          ALTER TABLE t ADD COLUMN b TEXT;
+          UPDATE t SET b = 'b-value';
+          CREATE INDEX ix_t_drift ON t(b);
+        `);
+        db.enableDefensive?.(false);
+        db.exec("PRAGMA writable_schema = ON;");
+        db.prepare(
+          `UPDATE sqlite_schema
+              SET sql = 'CREATE INDEX ix_t_drift ON t(a, b)'
+            WHERE name = 'ix_t_drift'`,
+        ).run();
+        const schemaVersion = Number(
+          (db.prepare("PRAGMA schema_version").get() as { schema_version: number }).schema_version,
+        );
+        db.exec(`PRAGMA writable_schema = OFF; PRAGMA schema_version = ${schemaVersion + 1};`);
+      } finally {
+        db.close();
+      }
+    }
+
+    function integrityOf(databasePath: string): string {
+      const db = new DatabaseSync(databasePath);
+      try {
+        return (db.prepare("PRAGMA integrity_check").all() as Array<{ integrity_check: string }>)
+          .map((row) => row.integrity_check)
+          .join("; ");
+      } finally {
+        db.close();
+      }
+    }
+
+    it("carries the drift into the snapshot, so certifying the copy can see it", () => {
+      // The property the whole re-key depends on, asserted rather than assumed. VACUUM rebuilds
+      // pages, which could plausibly have laundered the drift and left the hourly pass certifying a
+      // clean copy of a damaged file -- that would make re-keying WORSE than deleting these tests,
+      // because it would encode a guarantee that does not exist. Measured 2026-10-07: it does not
+      // launder it, and the copy reports the same index error.
+      const dir = tempDirs.make("agent-db-snapshot-drift-survives-");
+      const databasePath = makeDatabase(dir);
+      createPhysicalIndexDrift(databasePath);
+      expect(integrityOf(databasePath)).toMatch(/ix_t_drift/);
+
+      const copyPath = join(dir, "vacuumed.sqlite");
+      const source = new DatabaseSync(databasePath);
+      try {
+        source.exec(`VACUUM INTO '${copyPath.replaceAll("\\", "/")}'`);
+      } finally {
+        source.close();
+      }
+
+      expect(integrityOf(copyPath)).toMatch(/ix_t_drift/);
+    });
+
+    it("proves corruption and classifies it against the source", () => {
+      // Was: "rejects unrelated current-schema index corruption before exposure" and "rejects stale
+      // schema_meta indexes before writable initialization" -- both asserted the OPEN throws. The
+      // open no longer page-walks, so the refusal lives here: the pass proves the damage and names
+      // the live file, which is what the sidecar latches and halts on.
+      const dir = tempDirs.make("agent-db-snapshot-drift-corrupt-");
+      const databasePath = makeDatabase(dir);
+      createPhysicalIndexDrift(databasePath);
+
+      const outcome = snapshotAndCertifyAgentDatabase({
+        agentId: "a",
+        databasePath,
+        snapshotDir: join(dir, "snapshots"),
+      });
+
+      expect(outcome.kind).toBe("corrupt");
+      if (outcome.kind !== "corrupt") {
+        throw new Error("expected proven corruption");
+      }
+      // Classified against the SOURCE, not the copy: the verdict must name the live database the
+      // gateway would otherwise keep serving.
+      expect(outcome.databasePath).toBe(databasePath);
+      expect(String(outcome.error)).toMatch(/ix_t_drift|integrity_check/);
+    });
+
+    it("does not certify a restore point for a drifted database", () => {
+      // Was part of "rechecks integrity after a validated handle is physically reopened": a damaged
+      // file must not be able to look healthy, and it must not become the restore point either.
+      const dir = tempDirs.make("agent-db-snapshot-drift-nocert-");
+      const databasePath = makeDatabase(dir);
+      createPhysicalIndexDrift(databasePath);
+      const snapshotDir = join(dir, "snapshots");
+
+      snapshotAndCertifyAgentDatabase({ agentId: "a", databasePath, snapshotDir });
+
+      expect(readCertifiedSnapshotAgeMs(snapshotDir)).toBeUndefined();
+    });
+  });
 });

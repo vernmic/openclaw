@@ -1,6 +1,11 @@
 import type { DatabaseSync } from "node:sqlite";
 import { assertSqliteIntegrityInWorker } from "../infra/sqlite-integrity-worker.js";
-import { assertSqliteIntegrity, type SqliteIntegrityOperation } from "../infra/sqlite-integrity.js";
+import {
+  assertSqliteForeignKeys,
+  assertSqliteIntegrityForKind,
+  type SqliteIntegrityOperation,
+  type SqliteIntegrityStep,
+} from "../infra/sqlite-integrity.js";
 import { normalizeAgentId } from "../routing/session-key.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import {
@@ -146,7 +151,7 @@ export function createOpenClawAgentDatabaseAdmissionOwner(
     void pending.promise.catch(() => {});
     pending.operations += 1;
     const steps = openSteps(options, pending);
-    let check: { database: DatabaseSync; databaseLabel: string } | undefined;
+    let check: SqliteIntegrityStep | undefined;
     let failure: { error: unknown } | undefined;
     let suspended = false;
     try {
@@ -182,7 +187,7 @@ export function createOpenClawAgentDatabaseAdmissionOwner(
         failure = undefined;
         try {
           pending.controller.signal.throwIfAborted();
-          assertSqliteIntegrity(check.database, check.databaseLabel);
+          assertSqliteIntegrityForKind(check.database, check.databaseLabel, check.checks);
         } catch (error) {
           failure = { error };
         }
@@ -300,11 +305,19 @@ export function createOpenClawAgentDatabaseAdmissionOwner(
         let failure: unknown;
         let failed = false;
         try {
-          await assertSqliteIntegrityInWorker(
-            pathname,
-            OPENCLAW_SQLITE_BUSY_TIMEOUT_MS,
-            pending.controller.signal,
-          );
+          if (step.value.checks === "foreign-keys") {
+            // Inline, not in the worker: foreign_key_check is ~1.07s on the 1.9 GB database, where
+            // the worker exists to keep a 6s page walk off the opening thread. Offloading a check
+            // this cheap would cost a thread handshake and a second open to save a second.
+            pending.controller.signal.throwIfAborted();
+            assertSqliteForeignKeys(database, step.value.databaseLabel);
+          } else {
+            await assertSqliteIntegrityInWorker(
+              pathname,
+              OPENCLAW_SQLITE_BUSY_TIMEOUT_MS,
+              pending.controller.signal,
+            );
+          }
         } catch (error) {
           failure = error;
           failed = true;

@@ -6,6 +6,7 @@ import {
   isTerminalSqliteIntegrityError,
   runSqliteIntegrityOperationSync,
   sqliteIntegrityCheckSteps,
+  type SqliteIntegrityCheckKind,
   type SqliteIntegrityDiagnostics,
   type SqliteIntegrityOperation,
 } from "./sqlite-integrity.js";
@@ -56,12 +57,19 @@ export function* verifyAndRepairCanonicalSqliteIndexSteps(
   schemaSql: string,
   options: Omit<RepairCanonicalSqliteIndexesOptions, "verifyPhysicalIntegrity"> & {
     diagnostics?: SqliteIntegrityDiagnostics;
+    /**
+     * Which checks the opening gate runs. Defaults to `full`, so every caller that does not ask
+     * keeps the historical integrity_check + foreign_key_check. `foreign-keys` is for callers whose
+     * physical-corruption coverage lives elsewhere -- see the agent steady-state open, which gets it
+     * from the hourly snapshot certification instead.
+     */
+    physicalIntegrity?: SqliteIntegrityCheckKind;
   } = {},
 ): SqliteIntegrityOperation<string[]> {
-  const { diagnostics, ...repairOptions } = options;
+  const { diagnostics, physicalIntegrity = "full", ...repairOptions } = options;
   let integrityFailure: Error | undefined;
   try {
-    yield* sqliteIntegrityCheckSteps(db, databaseLabel, diagnostics);
+    yield* sqliteIntegrityCheckSteps(db, databaseLabel, diagnostics, physicalIntegrity);
   } catch (error) {
     if (!(error instanceof Error) || !isTerminalSqliteIntegrityError(error)) {
       throw error;

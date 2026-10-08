@@ -516,6 +516,25 @@ export function* agentDatabaseIntegrityBeforeMutationSteps(
       validateAfterRepair: () =>
         assertOpenClawAgentCurrentRuntimeSchema(database, { agentId, pathname }),
       diagnostics,
+      // Steady-state opens check references, not pages (ruling 2026-10-07, Fizban + Astinus).
+      // integrity_check was 6.03s of the 7.1s pair on main (1.9 GB) and ran on every physical open --
+      // 1,501 of them on 2026-10-04, all healthy, zero repairs, and producing no restore point. It
+      // moves to the hourly snapshot certification, which validates the copy it keeps.
+      // foreign_key_check stays here, at 1.07s, because it is the half that catches damage this
+      // system actually manufactures: a deleter running with FK enforcement off left 103,587 dangling
+      // rows on 2026-10-07, and this gate refused the open rather than serving them. Under the
+      // alternative the window between damage and detection was up to a full hour of agents querying
+      // ground truth that silently lied.
+      // Scoped HERE, not inside verifyAndRepairCanonicalSqliteIndexSteps: the sync wrapper
+      // verifyAndRepairCanonicalSqliteIndexes delegates to it from openclaw-state-db.ts and from the
+      // legacy agent path below, and its options type never exposes physicalIntegrity -- so both keep
+      // the full check, and moving the scoping inward would silently drop it for them.
+      // ACCEPTED COST, 2026-10-07 (Vern): repair-at-open is dropped, not relocated. Physical index
+      // drift hidden behind canonical schema text used to self-heal on the next open; it now
+      // surfaces at the hourly pass as proven corruption and halts. Detection and classification
+      // are covered by openclaw-agent-db-snapshot.test.ts > "physical index drift (re-keyed from
+      // the per-open gate)"; the open-side contract is pinned in openclaw-agent-db.test.ts.
+      physicalIntegrity: "foreign-keys",
     });
     assertOpenClawAgentCurrentRuntimeSchema(database, { agentId, pathname });
   } else if (

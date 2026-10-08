@@ -13,11 +13,37 @@ type SqliteIntegrityChecks = {
   integrityCheck: "ok";
 };
 
-export type SqliteIntegrityOperation<T> = Generator<
-  { database: DatabaseSync; databaseLabel: string },
-  T,
-  void
->;
+/**
+ * Which checks a yielded admission step wants.
+ *
+ * `full` is integrity_check + foreign_key_check, the historical gate. `foreign-keys` is the
+ * referential half alone, for callers whose physical-corruption coverage comes from somewhere else
+ * on a slower cadence. Measured 2026-10-07 on the live databases: on main (1.9 GB) the pair is
+ * 1.07s of foreign_key_check and 6.03s of integrity_check, so the page walk is 85% of the cost and
+ * the referential half is the one that catches logic-caused damage (103,587 dangling rows that
+ * morning, from a deleter that ran with FK enforcement off).
+ *
+ * The kind rides the STEP rather than the generator because the consumer picks the check: three
+ * drivers do (the sync operation runner, the sync admission driver, and the async driver that
+ * offloads to a worker thread), and a kind known only to the generator would not reach them.
+ */
+export type SqliteIntegrityCheckKind = "full" | "foreign-keys";
+
+/**
+ * One yielded admission step: the database to check and which checks to run.
+ *
+ * Named rather than inlined because consumers hold it in locals. A driver that re-declares the
+ * shape by hand drifts the moment a field is added -- which is exactly what happened on
+ * 2026-10-07: `openclaw-agent-db-admission.ts` kept its own
+ * `{ database; databaseLabel }` annotation and failed to compile against `checks`.
+ */
+export type SqliteIntegrityStep = {
+  database: DatabaseSync;
+  databaseLabel: string;
+  checks: SqliteIntegrityCheckKind;
+};
+
+export type SqliteIntegrityOperation<T> = Generator<SqliteIntegrityStep, T, void>;
 
 export type SqliteIntegrityDiagnostics = {
   integrityGateMs?: number;
@@ -31,10 +57,11 @@ export function* sqliteIntegrityCheckSteps(
   database: DatabaseSync,
   databaseLabel: string,
   diagnostics?: SqliteIntegrityDiagnostics,
+  checks: SqliteIntegrityCheckKind = "full",
 ): SqliteIntegrityOperation<void> {
   const startedAt = performance.now();
   try {
-    yield { database, databaseLabel };
+    yield { database, databaseLabel, checks };
     if (diagnostics) {
       diagnostics.integrityGateOutcome = "healthy";
     }
@@ -55,7 +82,11 @@ export function runSqliteIntegrityOperationSync<T>(operation: SqliteIntegrityOpe
   let step = operation.next();
   while (!step.done) {
     try {
-      assertSqliteIntegrity(step.value.database, step.value.databaseLabel);
+      assertSqliteIntegrityForKind(
+        step.value.database,
+        step.value.databaseLabel,
+        step.value.checks,
+      );
     } catch (error) {
       step = operation.throw(error);
       continue;
@@ -105,6 +136,33 @@ export function assertSqliteIntegrity(
   const integrityCheck = runSqliteCheck(database, databaseLabel, "integrity_check");
   runSqliteForeignKeyCheck(database, databaseLabel);
   return { integrityCheck };
+}
+
+/**
+ * Require referential consistency alone, skipping the whole-file page walk.
+ *
+ * A violation here is not an `isTerminalSqliteIntegrityError`, so it rethrows out of the admission
+ * generator instead of routing into index repair: dangling references refuse the open rather than
+ * being served. That is the property this check is kept at open for.
+ */
+export function assertSqliteForeignKeys(database: DatabaseSync, databaseLabel: string): void {
+  runSqliteForeignKeyCheck(database, databaseLabel);
+}
+
+/**
+ * The one place a step's check kind becomes actual checks. Every driver routes through this, so
+ * adding a kind cannot silently degrade to "full" in whichever driver forgot about it.
+ */
+export function assertSqliteIntegrityForKind(
+  database: DatabaseSync,
+  databaseLabel: string,
+  checks: SqliteIntegrityCheckKind,
+): void {
+  if (checks === "foreign-keys") {
+    assertSqliteForeignKeys(database, databaseLabel);
+    return;
+  }
+  assertSqliteIntegrity(database, databaseLabel);
 }
 
 /** Run integrity checks and preserve whether a failure proves persistent damage. */

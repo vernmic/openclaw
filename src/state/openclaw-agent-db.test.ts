@@ -3727,35 +3727,28 @@ describe("openclaw agent database", () => {
     ).toThrow(/UNIQUE constraint failed/iu);
   });
 
-  it("repairs physical transcript index drift hidden behind canonical schema text", () => {
+  // RE-KEYED 2026-10-07 (Option B; ruling Fizban + Astinus, accepted by Vern). This used to assert
+  // that a physical open REPAIRED transcript index drift hidden behind canonical schema text. The
+  // steady-state open is now scoped to foreign_key_check, so the whole-file page walk that detected
+  // the drift -- and whose verdict drove the index repair -- does not run.
+  //
+  // DROPPED GUARANTEE, deliberately: repair-at-open. The hourly pass detects this damage and halts;
+  // it does not repair. Detection and classification are asserted in
+  // openclaw-agent-db-snapshot.test.ts > "physical index drift (re-keyed from the per-open gate)".
+  // What this test now pins is the new contract, so the change cannot silently drift further: the
+  // open admits the database, and the damage is still in it.
+  it("admits physical transcript index drift at open without repairing it", () => {
     const stateDir = createTempStateDir();
     const env = { OPENCLAW_STATE_DIR: stateDir };
     const databasePath = materializeCurrentWorkerAgentDatabase(stateDir);
     createTranscriptIdempotencyIndexDrift(databasePath, { hideWithCanonicalSql: true });
 
     const reopened = openOpenClawAgentDatabase({ agentId: "worker-1", env });
-    expect(reopened.db.prepare("PRAGMA integrity_check").get()).toEqual({
-      integrity_check: "ok",
-    });
+
     expect(
-      reopened.db
-        .prepare(
-          `SELECT event_id
-             FROM transcript_event_identities
-            WHERE session_id = ?
-              AND message_idempotency_key = ?`,
-        )
-        .get("session-1", "message-1"),
-    ).toEqual({ event_id: "event-1" });
-    expect(() =>
-      reopened.db
-        .prepare(
-          `INSERT INTO transcript_event_identities (
-             session_id, event_id, seq, message_idempotency_key, created_at
-           ) VALUES (?, ?, ?, ?, ?)`,
-        )
-        .run("session-1", "event-2", 2, "message-1", 2),
-    ).toThrow(/UNIQUE constraint failed/iu);
+      (reopened.db.prepare("PRAGMA integrity_check").get() as { integrity_check: string })
+        .integrity_check,
+    ).toMatch(/idx_agent_transcript_message_idempotency/iu);
   });
 
   it("repairs every missing or drifted canonical agent-state named index", () => {
@@ -3789,25 +3782,23 @@ describe("openclaw agent database", () => {
     expect(readSqliteNumberPragma(reopened.db, "user_version")).toBe(OPENCLAW_AGENT_SCHEMA_VERSION);
   });
 
-  it("repairs physical ordinary-index drift before cold-open reads", () => {
+  // RE-KEYED 2026-10-07 with the transcript-drift test above, same reason: repair-at-open is gone.
+  // The old body also read back through `INDEXED BY idx_agent_cache_expiry` to prove the repaired
+  // index served the row. That assertion is not re-keyed -- querying through an index whose btree
+  // does not match its schema text has no defined answer, so asserting one would be asserting
+  // undefined behaviour. The defined, checkable fact is that the damage is still present.
+  it("admits physical ordinary-index drift at open without repairing it", () => {
     const stateDir = createTempStateDir();
     const env = { OPENCLAW_STATE_DIR: stateDir };
     const databasePath = materializeCurrentWorkerAgentDatabase(stateDir);
     createCacheExpiryIndexPhysicalDrift(databasePath);
 
     const reopened = openOpenClawAgentDatabase({ agentId: "worker-1", env });
-    expect(reopened.db.prepare("PRAGMA integrity_check").get()).toEqual({
-      integrity_check: "ok",
-    });
+
     expect(
-      reopened.db
-        .prepare(
-          `SELECT key
-             FROM cache_entries INDEXED BY idx_agent_cache_expiry
-            WHERE scope = 'scope-a' AND expires_at = 100 AND key = 'key-a'`,
-        )
-        .all(),
-    ).toEqual([{ key: "key-a" }]);
+      (reopened.db.prepare("PRAGMA integrity_check").get() as { integrity_check: string })
+        .integrity_check,
+    ).toMatch(/idx_agent_cache_expiry/iu);
   });
 
   it("repairs same-version additive session-key surfaces before schema validation", async () => {
@@ -4809,16 +4800,28 @@ describe("openclaw agent database", () => {
     ]);
   });
 
-  it("rejects stale schema_meta indexes before writable initialization", () => {
+  // RE-KEYED 2026-10-07 (Option B). Previously both the open and a direct
+  // ensureOpenClawAgentDatabaseSchema call refused a stale schema_meta index, because both run the
+  // same steady-state branch and that branch page-walked the file. Under Option B both admit it:
+  // refusal on PHYSICAL damage moved to the hourly pass, which proves the corruption, classifies it
+  // against the live file and halts (openclaw-agent-db-snapshot.test.ts > "physical index drift").
+  //
+  // Note what did NOT move: refusal on SCHEMA-SHAPE damage. "rejects unexpected unique indexes
+  // before writable initialization" below still refuses at open, because the schema contract check
+  // is independent of the page walk. The split between those two tests is the whole point.
+  it("admits a stale schema_meta index at open, leaving it to the hourly pass", () => {
     const stateDir = createTempStateDir();
     const env = { OPENCLAW_STATE_DIR: stateDir };
     const databasePath = materializeCurrentWorkerAgentDatabase(stateDir);
     createUnsafeSchemaMetaIndexDrift(databasePath);
 
     const { DatabaseSync } = requireNodeSqlite();
-    expect(() => openOpenClawAgentDatabase({ agentId: "worker-1", env })).toThrow(
-      /integrity_check failed.*unsafe_schema_meta_role/iu,
-    );
+    const opened = openOpenClawAgentDatabase({ agentId: "worker-1", env });
+    expect(
+      (opened.db.prepare("PRAGMA integrity_check").get() as { integrity_check: string })
+        .integrity_check,
+    ).toMatch(/unsafe_schema_meta_role/iu);
+
     const independentlyManaged = new DatabaseSync(databasePath);
     try {
       expect(() =>
@@ -4826,7 +4829,7 @@ describe("openclaw agent database", () => {
           agentId: "worker-1",
           env,
         }),
-      ).toThrow(/integrity_check failed.*unsafe_schema_meta_role/iu);
+      ).not.toThrow();
     } finally {
       independentlyManaged.close();
     }
@@ -4853,27 +4856,50 @@ describe("openclaw agent database", () => {
     );
   });
 
-  it("rejects unrelated current-schema index corruption before exposure", () => {
+  // RE-KEYED 2026-10-07 (Option B): physical index corruption no longer refuses the open.
+  it("admits unrelated current-schema index corruption at open", () => {
     const stateDir = createTempStateDir();
     const env = { OPENCLAW_STATE_DIR: stateDir };
     const databasePath = materializeCurrentWorkerAgentDatabase(stateDir);
     createUnsafeIndexDrift(databasePath);
 
-    expect(() => openOpenClawAgentDatabase({ agentId: "worker-1", env })).toThrow(
-      /integrity_check failed.*missing from index unsafe_index_records_value/iu,
-    );
+    const opened = openOpenClawAgentDatabase({ agentId: "worker-1", env });
+    expect(
+      (opened.db.prepare("PRAGMA integrity_check").get() as { integrity_check: string })
+        .integrity_check,
+    ).toMatch(/missing from index unsafe_index_records_value/iu);
   });
 
-  it("rechecks integrity after a validated handle is physically reopened", () => {
+  // RE-KEYED 2026-10-07, but this one keeps its real guarantee rather than handing it over.
+  //
+  // The property under test is that validation is NOT cached across a physical reopen -- a handle
+  // that was once validated must be re-proved when the file is reopened. Option B narrows WHAT is
+  // re-proved (references, not pages); it does not make the reopen trust its own history. So the
+  // test now drifts the file in a way the retained check still sees: an orphaned session_windows
+  // row, created with FK enforcement off, exactly as the 2026-10-07 reaper did in production.
+  // Recipe matches "rejects current-schema foreign-key violations before exposure" below.
+  it("rechecks foreign keys after a validated handle is physically reopened", () => {
     const stateDir = createTempStateDir();
     const env = { OPENCLAW_STATE_DIR: stateDir };
     const databasePath = openOpenClawAgentDatabase({ agentId: "worker-1", env }).path;
     expect(closeOpenClawAgentDatabaseByPath(databasePath)).toBe(true);
     closeOpenClawStateDatabaseForTest();
-    createUnsafeIndexDrift(databasePath);
+
+    const { DatabaseSync } = requireNodeSqlite();
+    const corrupted = new DatabaseSync(databasePath);
+    try {
+      corrupted.exec("PRAGMA foreign_keys = OFF;");
+      corrupted
+        .prepare(
+          "INSERT INTO session_windows (session_id, session_key, created_at, updated_at) VALUES (?, ?, ?, ?)",
+        )
+        .run("orphan-window", "missing-node", 1, 1);
+    } finally {
+      corrupted.close();
+    }
 
     expect(() => openOpenClawAgentDatabase({ agentId: "worker-1", env })).toThrow(
-      /integrity_check failed.*missing from index unsafe_index_records_value/iu,
+      /foreign_key_check failed.*session_windows row 1 references session_nodes/iu,
     );
   });
 
