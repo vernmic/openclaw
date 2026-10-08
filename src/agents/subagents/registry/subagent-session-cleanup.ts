@@ -7,6 +7,7 @@ import {
   getGatewayContextLifetime,
   withPluginRuntimeGatewayContextResolver,
 } from "../../../plugins/runtime/gateway-request-scope.js";
+import { parseAgentSessionKey } from "../../../routing/session-key.js";
 import { createLazyRuntimeModule } from "../../../shared/lazy-runtime.js";
 import type { SpawnSubagentMode } from "../spawn/subagent-spawn.types.js";
 
@@ -45,6 +46,7 @@ export async function deleteSubagentSessionForCleanup(params: {
   prepareCurrent?: () => Promise<boolean>;
   isCurrent?: () => boolean;
   childSessionKey: string;
+  childAgentId?: string;
   spawnMode?: SpawnSubagentMode;
   emitLifecycleHooks?: boolean;
   deleteTranscript?: boolean;
@@ -60,6 +62,9 @@ export async function deleteSubagentSessionForCleanup(params: {
   const isCurrent = params.isCurrent;
   const cleanupParams: SessionsDeleteParams = {
     key: params.childSessionKey,
+    ...(params.childAgentId === undefined || parseAgentSessionKey(params.childSessionKey)
+      ? {}
+      : { agentId: params.childAgentId }),
     deleteTranscript: params.deleteTranscript ?? true,
     emitLifecycleHooks: params.emitLifecycleHooks ?? params.spawnMode === "session",
     expectedSessionId: params.expectedSessionId,

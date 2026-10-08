@@ -163,6 +163,19 @@ export async function withSessionEntryReadOnlyInWorker<T>(
   );
 }
 
+/** Return entry data only after the retained physical reader has finished its currentness checks. */
+export function readSessionEntryReadOnlyInWorker(
+  input: SessionEntryReadScope,
+  assertCallerCurrent: () => void = () => {},
+): Promise<SessionEntry | undefined> {
+  return withSessionEntryReadOnlyInWorker(input, assertCallerCurrent, async (read) => {
+    if (!read.ok) {
+      throw read.error;
+    }
+    return read.value;
+  });
+}
+
 /** Diagnostic identities name the default agent store, not a logical store locator. */
 export async function withSessionDiagnosticTextInWorker(
   input: { agentId: string; sessionKey: string; sessionId: string },

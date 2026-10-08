@@ -9,6 +9,7 @@ import {
 } from "../../../auto-reply/tokens.js";
 import { hasSqliteWorkerOutcomeUnknown } from "../../../infra/sqlite-worker-contract.js";
 import { withPluginRuntimeGatewayContextResolver } from "../../../plugins/runtime/gateway-request-scope.js";
+import { parseAgentSessionKey } from "../../../routing/session-key.js";
 import { defaultRuntime } from "../../../runtime.js";
 import { isCronSessionKey } from "../../../sessions/session-key-utils.js";
 import { createLazyPromise } from "../../../shared/lazy-promise.js";
@@ -208,7 +209,10 @@ async function runSubagentAnnounceFlowBound(
     const childSessionEntry =
       !(await prepareChildSessionEffects()) || !childSessionEffectsAllowed()
         ? undefined
-        : await loadSessionEntryByKey(params.childSessionKey);
+        : await loadSessionEntryByKey(
+            params.childSessionKey,
+            parseAgentSessionKey(params.childSessionKey) ? undefined : params.childAgentId,
+          );
     childSessionId =
       typeof childSessionEntry?.sessionId === "string" && childSessionEntry.sessionId.trim()
         ? childSessionEntry.sessionId.trim()
@@ -643,6 +647,7 @@ async function runSubagentAnnounceFlowBound(
         prepareCurrent: prepareChildSessionEffects,
         isCurrent: childSessionEffectsAllowed,
         childSessionKey: params.childSessionKey,
+        childAgentId: params.childAgentId,
         spawnMode: params.spawnMode,
         expectedSessionId: childSessionId,
         expectedLifecycleRevision: childSessionLifecycleRevision,

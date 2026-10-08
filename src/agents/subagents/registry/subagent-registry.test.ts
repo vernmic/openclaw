@@ -843,8 +843,11 @@ describe("subagent registry seam flow", () => {
     };
     mockRestoredRuns(() => [restored]);
     mockPendingAgentWait();
+    // #166845: restored resume runs after an asynchronous session read, in detached work.
+    const settleRootWork = observeRootWork();
 
     await hydrateAndActivateRegistry();
+    await settleRootWork();
 
     expect(mocks.callGateway).toHaveBeenCalledTimes(waits ? 1 : 0);
     if (waits) {
@@ -1839,8 +1842,12 @@ describe("subagent registry seam flow", () => {
 
     const settleRootWork = observeRootWork();
     await hydrateAndActivateRegistry();
+    // #166845: the resume (and its remaining-budget calculation) follows an asynchronous
+    // session read; vi.waitFor advances fake time per poll, so settle that work first.
+    await settleRootWork(true);
 
-    await waitForFast(() => {
+    // Completion now also follows worker reads, which can exceed waitForFast's 1 s of real time.
+    await vi.waitFor(() => {
       expect(waitTimeouts).toEqual([1_000]);
       const completedRun = findRequesterRun("run-resumed-near-deadline");
       expect(completedRun?.execution.endedAt).toBe(startedAt + 60_000);
@@ -1854,7 +1861,7 @@ describe("subagent registry seam flow", () => {
         },
         "restored explicit run timeout outcome",
       );
-    });
+    }, { timeout: 15_000, interval: 1 });
     await settleRootWork();
     expect(mocks.runSubagentAnnounceFlow).toHaveBeenCalledTimes(1);
   });

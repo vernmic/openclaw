@@ -48,6 +48,7 @@ import { buildAgentRunTerminalOutcome } from "../../agent-run-terminal-outcome.j
 import { createAgentCommandLifecycle } from "../../command/lifecycle.js";
 import { prepareInternalSessionEffectsSession } from "../../internal-session-effects.js";
 import { runSubagentAnnounceFlow } from "../announce/subagent-announce.js";
+import { registerRawChildRestoreOwnershipTest } from "./subagent-orphan-recovery.raw-owner.test-support.js";
 import { SubagentLifecycleController } from "./subagent-registry-lifecycle.js";
 import { subagentRuns } from "./subagent-registry-memory.js";
 import { subscribeSubagentRunChanges } from "./subagent-registry-publication.js";
@@ -151,6 +152,8 @@ it.each(["durable", "incognito"] as const)(
 describe("subagent orphan recovery — faithful restart path", () => {
   const fixture = useSubagentRestartRecoveryFixture();
   const { activateGatewayRuntime, dispatchAgent, gatewayRuntime } = fixture;
+
+  registerRawChildRestoreOwnershipTest(fixture);
 
   it("hands five retained predecessor sessions to restart recovery without startup warnings", async () => {
     const startedAt = Math.floor(performance.timeOrigin) - 60_000;
