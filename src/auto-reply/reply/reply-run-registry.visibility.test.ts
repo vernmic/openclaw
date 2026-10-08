@@ -397,32 +397,91 @@ it.each(["same-owner", "different-owner"])(
   },
 );
 
-it.each([false, true])(
-  "only status-only callers preserve work on an uncertain steering receipt (statusOnly=%s)",
-  async (statusOnly) => {
+// Adapted onto v2026.10.3 (#166754): upstream also runs an "exception" receipt variant that throws
+// MessageInjectionAcceptedUnconfirmedError. That class comes from #165370 (session authority B1),
+// which 10.3 does not carry, so 10.3 has no such error path; only the "result" receipt applies here.
+it.each(["result"] as const)(
+  "retains steering custody without canceling backing work after an uncertain %s",
+  async () => {
     const operation = createTestReplyOperation();
+    const cancel = vi.fn();
+    const onQueueAccepted = vi.fn();
+    const onOutcome = vi.fn();
+    const queueMessage = vi.fn<ReplyBackendMessageInjectionV2["queueMessage"]>(async () => {
+      return { transcriptCommit: "unconfirmed", errorMessage: "still awaiting commit" };
+    });
     operation.attachBackend({
       kind: "embedded",
       runId: "receipt-run",
-      cancel: vi.fn(),
+      cancel,
       messageInjectionV2: {
         version: 2,
         isAvailable: () => true,
-        queueMessage: async () => ({
-          transcriptCommit: "unconfirmed",
-          errorMessage: "still awaiting commit",
-        }),
+        queueMessage,
       },
     });
     operation.setPhase("running");
     const target = replyRunRegistry.resolveCurrentMessageInjectionTarget(operation.key)!;
-    const attempt = beginReplyMessageInjectionTarget(target, "Queued guidance");
+    const attempt = beginReplyMessageInjectionTarget(target, "Queued guidance", {
+      onQueueAccepted,
+    });
     const result = await finalizeReplyMessageInjectionAttempt({
       attempt,
       target,
-      ...(statusOnly ? { abortOnUnconfirmedTranscript: false as const } : {}),
+      onOutcome,
     });
-    expect(result).toMatchObject({ status: "accepted", aborted: !statusOnly });
-    expect(operation.abortSignal.aborted).toBe(!statusOnly);
+    expect(result).toMatchObject({ status: "indeterminate" });
+    await expect(attempt.acceptance).resolves.toBe(true);
+    expect(onQueueAccepted).toHaveBeenCalledExactlyOnceWith(true);
+    expect(onOutcome).toHaveBeenCalledExactlyOnceWith("indeterminate");
+    expect(queueMessage).toHaveBeenCalledOnce();
+    expect(cancel).not.toHaveBeenCalled();
+    expect(operation.abortSignal.aborted).toBe(false);
+    expect(operation.phase).toBe("running");
+    operation.complete();
+  },
+);
+
+it.each([false, true])(
+  "explicit adoption cancellation targets the captured owner (replaced=%s)",
+  async (replaced) => {
+    const operation = createTestReplyOperation();
+    const abortCaptured = vi.spyOn(operation, "abortByUser");
+    const cancel = vi.fn();
+    operation.attachBackend({
+      kind: "embedded",
+      cancel,
+      messageInjection: { isAvailable: () => true, queueMessage: async () => {} },
+    });
+    operation.setPhase("running");
+    const target = replyRunRegistry.resolveCurrentMessageInjectionTarget(operation.key)!;
+    const attempt = await beginReplyMessageInjectionTarget(target, "Confirmed guidance");
+    await expect(attempt.outcome).resolves.toEqual({ status: "accepted" });
+    if (replaced) {
+      operation.complete();
+    }
+    const successor = createTestReplyOperation({
+      sessionKey: replaced ? operation.key : "agent:main:other",
+      sessionId: "next-session",
+    });
+    const successorCancel = vi.fn();
+    successor.attachBackend({ kind: "embedded", cancel: successorCancel });
+    successor.setPhase("running");
+    const adoptionError = new Error("source adoption lost");
+    const result = await finalizeReplyMessageInjectionAttempt({
+      attempt,
+      target,
+      onAdopted: () => {
+        throw adoptionError;
+      },
+      shouldAbortOnAdoptionError: (error) => error === adoptionError,
+    });
+    expect(result).toMatchObject({ status: "accepted", aborted: true, adoptionError });
+    expect(abortCaptured).toHaveBeenCalledOnce();
+    expect(cancel).toHaveBeenCalledTimes(replaced ? 0 : 1);
+    expect(successorCancel).not.toHaveBeenCalled();
+    expect(successor.abortSignal.aborted).toBe(false);
+    successor.complete();
+    operation.complete();
   },
 );

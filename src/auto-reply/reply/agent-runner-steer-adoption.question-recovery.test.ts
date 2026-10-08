@@ -344,19 +344,32 @@ describe("question response custody through reply adoption", () => {
           expect(abandoned).not.toHaveBeenCalled();
           expect(settled).not.toHaveBeenCalled();
           expect(tryDuplicate()).toBe(false);
-          delivery.resolve(
-            confirmation === "confirmed"
-              ? undefined
-              : { transcriptCommit: "unconfirmed", errorMessage: "transcript confirmation lost" },
-          );
-          await expect(adoption).resolves.toBe("handled");
-          expect(state.admission).toEqual({ status: "accepted", mode: "steer" });
+          // Adapted onto v2026.10.3 (#166754): upstream's parent also had a "backend-error" case;
+          // 10.3's parameter list is ["confirmed", "unconfirmed"], so only those two branches apply.
+          if (confirmation === "confirmed") {
+            delivery.resolve();
+            await expect(adoption).resolves.toBe("handled");
+            expect(state.admission).toEqual({ status: "accepted", mode: "steer" });
+          } else {
+            const errorMessage = "transcript confirmation lost";
+            delivery.resolve({ transcriptCommit: "unconfirmed", errorMessage });
+            const result = await adoption;
+            expect(state.admission).toEqual({
+              status: "skipped",
+              reason: "question-response-indeterminate",
+            });
+            expect(result).toMatchObject({
+              isError: true,
+              text: errorMessage,
+            });
+          }
           expect(adopted).toHaveBeenCalledOnce();
           expect(settled).toHaveBeenCalledOnce();
           expect(abandoned).not.toHaveBeenCalled();
           expect(tryDuplicate()).toBe(false);
           expect(followup).not.toHaveBeenCalled();
-          expect(cancel).toHaveBeenCalledTimes(confirmation === "unconfirmed" ? 1 : 0);
+          expect(cancel).not.toHaveBeenCalled();
+          expect(operation.abortSignal.aborted).toBe(false);
         } finally {
           delivery.resolve();
           await adoption.catch(() => undefined);

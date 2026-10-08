@@ -272,7 +272,6 @@ export async function finalizeAcceptedChatSendMessageInjection(params: {
     attempt: params.attempt,
     target: params.target,
     inboundAudio: hasInboundAudio(finalizedCtx),
-    ...(progressRefresh ? { abortOnUnconfirmedTranscript: false as const } : {}),
   });
   if (finalization.status === "rejected") {
     // Rejection also covers withdrawing a canceled queued steer. Fallback
@@ -290,26 +289,12 @@ export async function finalizeAcceptedChatSendMessageInjection(params: {
     finalizedCtx.MessageSidFirst ??
     finalizedCtx.MessageSidLast;
   const indeterminate =
-    finalization.status === "indeterminate"
-      ? finalization.outcome.errorMessage
-      : progressRefresh &&
-          finalization.status === "accepted" &&
-          finalization.outcome.result?.transcriptCommit === "unconfirmed"
-        ? finalization.outcome.result.errorMessage
-        : undefined;
-  const steerAborted = finalization.status === "accepted" && finalization.aborted;
+    finalization.status === "indeterminate" ? finalization.outcome.errorMessage : undefined;
   const outcomeReason = indeterminate
     ? progressRefresh
       ? "progress_refresh_receipt_unconfirmed"
       : "question_response_indeterminate"
-    : steerAborted
-      ? "reply_operation_aborted"
-      : "active_run_injected";
-  if (steerAborted) {
-    context.logGateway.warn(
-      `active run ${finalization.targetRunId ?? "unknown"} accepted chat steering without transcript confirmation; aborted exact target without replay`,
-    );
-  }
+    : "active_run_injected";
   await params.persistUserTurnTranscriptBestEffort();
   if (isDiagnosticsEnabled(cfg)) {
     logMessageReceived({
@@ -326,7 +311,7 @@ export async function finalizeAcceptedChatSendMessageInjection(params: {
       sessionId: entry?.sessionId,
       sessionKey,
       durationMs: Math.max(0, Date.now() - params.startedAt),
-      outcome: indeterminate ? "error" : steerAborted ? "skipped" : "completed",
+      outcome: indeterminate ? "error" : "completed",
       reason: outcomeReason,
     });
   }
@@ -347,9 +332,7 @@ export async function finalizeAcceptedChatSendMessageInjection(params: {
     startedAt: params.startedAt,
     terminal: indeterminate
       ? { outcome: "error", options: { reason: outcomeReason, error: indeterminate } }
-      : steerAborted
-        ? { outcome: "skipped", options: { reason: outcomeReason } }
-        : { outcome: "completed", options: { reason: outcomeReason } },
+      : { outcome: "completed", options: { reason: outcomeReason } },
   });
   const updatedAt = Date.now();
   if (entry) {

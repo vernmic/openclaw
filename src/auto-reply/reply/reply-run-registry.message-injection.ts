@@ -466,14 +466,15 @@ export function beginReplyMessageInjectionTarget(
   const outcome = queued.then(async (result): Promise<ReplyMessageInjectionOutcome> => {
     recordParticipant();
     settleAcceptance(true);
-    if (
-      targetRunId &&
-      queueOptions?.waitForTranscriptCommit === true &&
-      result?.transcriptCommit !== "unconfirmed"
-    ) {
+    // Receipt uncertainty retains this input, but cannot authorize canceling
+    // the active run or replaying input the runtime may already have consumed.
+    if (result?.transcriptCommit === "unconfirmed") {
+      return { status: "indeterminate", errorMessage: result.errorMessage };
+    }
+    if (targetRunId && queueOptions?.waitForTranscriptCommit === true) {
       await userTurnTranscriptRecorder?.confirmSteerTargetRunIdForPersistence?.(targetRunId);
     }
-    return result ? { status: "accepted", result } : { status: "accepted" };
+    return { status: "accepted" };
   }, failed);
   return {
     targetRunId,
@@ -487,8 +488,6 @@ export async function finalizeReplyMessageInjectionAttempt(params: {
   attempt: ReplyMessageInjectionAttempt;
   target: ReplyMessageInjectionTarget;
   inboundAudio?: boolean;
-  /** Status-only controls cannot cancel independent work when their receipt is uncertain. */
-  abortOnUnconfirmedTranscript?: false;
   onOutcome?: (outcome: "accepted" | "indeterminate") => void;
   onAdopted?: () => void | Promise<void>;
   shouldAbortOnAdoptionError?: (error: unknown) => boolean;
@@ -522,12 +521,9 @@ export async function finalizeReplyMessageInjectionAttempt(params: {
   owner.recordAccepted({
     inboundAudio: params.inboundAudio,
   });
-  let aborted =
-    outcome.result?.transcriptCommit === "unconfirmed" &&
-    params.abortOnUnconfirmedTranscript !== false;
-  if (aborted) {
-    owner.abort();
-  }
+  // #166754: an unconfirmed receipt now arrives as "indeterminate" (above) and never aborts the
+  // running tools; only a failed adoption the caller classifies as abortable still does.
+  let aborted = false;
   let adoptionError: unknown;
   try {
     await params.onAdopted?.();
