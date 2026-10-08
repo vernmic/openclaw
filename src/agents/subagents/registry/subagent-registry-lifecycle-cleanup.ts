@@ -130,6 +130,8 @@ export function suspendReplacedStoreNotifications(
         delivery.deliveredAt === undefined &&
         delivery.announcedAt === undefined &&
         entry.execution.status === "terminal" &&
+        entry.execution.outcome !== undefined &&
+        entry.pauseReason !== "sessions_yield" &&
         entry.expectsCompletionMessage === true &&
         !isSystemEventStoreCurrent(requesterSessionKey, requesterStorePath, requesterAgentId)
       );
@@ -156,9 +158,6 @@ export function suspendReplacedStoreNotifications(
           storeReplaced: true,
         }))
       ) {
-        options.warn("subagent notification store retirement has no current native owner", {
-          runId: entry.runId,
-        });
         continue;
       }
       current = getCurrentSubagentRunOwner(options.runs, entry);
