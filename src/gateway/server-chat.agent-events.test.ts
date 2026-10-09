@@ -2532,6 +2532,7 @@ describe("agent event handler", () => {
       await entered.promise;
       releaseAgentRunContext(runId, claimId);
       broadcastChatFinal({
+        terminalEntry: undefined,
         context: harness,
         runId,
         sessionKey,

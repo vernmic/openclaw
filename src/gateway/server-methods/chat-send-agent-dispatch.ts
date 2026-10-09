@@ -570,6 +570,7 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
             !context.chatRunState.hasAbortMarker(clientRunId)
           ) {
             await finalizeChatSendDispatchedReplies({
+              terminalEntry: sessionBinding,
               requesterContext: ctx,
               abortSignal: activeRunAbort.controller.signal,
               accountId,
@@ -591,6 +592,7 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
             });
           } else if (!progressRefresh && !context.chatRunState.hasAbortMarker(clientRunId)) {
             finalizedSourceReply = await finalizeChatSendSourceReplies({
+              terminalEntry: sessionBinding,
               requesterContext: ctx,
               abortSignal: activeRunAbort.controller.signal,
               accountId,
@@ -607,6 +609,7 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
           if (!context.chatRunState.hasAbortMarker(clientRunId)) {
             if (shouldBroadcastAgentError) {
               broadcastChatError({
+                terminalEntry: sessionBinding,
                 context,
                 runId: clientRunId,
                 sessionKey,
@@ -680,6 +683,8 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
         // Successful queue admission ends this client run. The later
         // aggregate/followup owns its own run id.
         broadcastChatFinal({
+          // Queued work still holds the session; its own terminal records the outcome.
+          terminalEntry: undefined,
           context,
           runId: clientRunId,
           sessionKey,

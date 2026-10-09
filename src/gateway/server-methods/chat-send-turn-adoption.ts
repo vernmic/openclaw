@@ -4,6 +4,7 @@ import type { TurnAdoptionLifecycle } from "../../auto-reply/get-reply-options.t
 import type { QueuedFollowupReplyDelivery } from "../../auto-reply/reply/queue/types.js";
 import { createDeferredCore, type Deferred } from "../../shared/deferred.js";
 import { captureAgentJobSession, setGatewayDedupeEntry } from "../agent-turn/agent-job.js";
+import { markChatAbortTerminalOutcome } from "../chat-abort-lifecycle-internal.js";
 import type { ChatAbortControllerEntry } from "../chat-abort.js";
 import {
   completeQueuedChatTurn,
@@ -28,7 +29,7 @@ export function createChatSendTurnAdoptionLifecycle(params: {
   sessionBinding: Readonly<
     Pick<ChatAbortControllerEntry, "sessionKey" | "sessionId" | "agentId" | "lifecycleGeneration">
   > &
-    Pick<ChatAbortControllerEntry, "abortDiagnosticReason">;
+    Pick<ChatAbortControllerEntry, "abortDiagnosticReason" | "terminalOutcomeObserved">;
   sessionKey: string;
   agentId?: string;
   ownerConnId?: string;
@@ -56,6 +57,10 @@ export function createChatSendTurnAdoptionLifecycle(params: {
   let enqueued = false;
   let terminalKnown = false;
   let completed = false;
+  const ownsQueueIdentity = () => {
+    const current = params.chatQueuedTurns.get(params.runId);
+    return !current || current.controller === params.controller;
+  };
   let adoptionStarted = false;
   let withdrawalHold: Deferred | undefined;
   let releaseWorkAdmission: (() => void) | undefined;
@@ -67,6 +72,7 @@ export function createChatSendTurnAdoptionLifecycle(params: {
     ) {
       return;
     }
+    markChatAbortTerminalOutcome(params.sessionBinding);
     const now = Date.now();
     setGatewayDedupeEntry({
       dedupe: params.context.dedupe,
@@ -87,22 +93,36 @@ export function createChatSendTurnAdoptionLifecycle(params: {
       },
     });
   };
+  const finalizeReply = params.suppressReplies
+    ? undefined
+    : createChatSendLateReplyFinalizer({
+        terminalEntry: params.sessionBinding,
+        requesterContext: params.requesterContext,
+        abortSignal: params.controller.signal,
+        accountId: params.accountId,
+        context: params.context,
+        session: params.session,
+      });
   const lateFollowup = createChatSendLateFollowupDisposition({
     runId: params.runId,
     originatingChannel: params.originatingChannel,
     logGateway: params.context.logGateway,
-    deliver: params.suppressReplies
-      ? async ({ completion }) => {
-          terminalKnown ||= completion.kind !== "progress";
-          return { kind: "dropped" as const, reason: "no-visible-content" as const };
-        }
-      : createChatSendLateReplyFinalizer({
-          requesterContext: params.requesterContext,
-          abortSignal: params.controller.signal,
-          accountId: params.accountId,
-          context: params.context,
-          session: params.session,
-        }),
+    deliver: async (batch) => {
+      // A source retry delivers under its recovery run's identity, not this source's.
+      if (
+        batch.clientRunId === params.runId &&
+        batch.completion.kind !== "progress" &&
+        batch.isCurrent() &&
+        ownsQueueIdentity()
+      ) {
+        markChatAbortTerminalOutcome(params.sessionBinding);
+      }
+      if (!finalizeReply) {
+        terminalKnown ||= batch.completion.kind !== "progress";
+        return { kind: "dropped" as const, reason: "no-visible-content" as const };
+      }
+      return await finalizeReply(batch);
+    },
   });
   const lifecycle: TurnAdoptionLifecycle = {
     // Gateway cancel identity only — share collect key via ownerKey.

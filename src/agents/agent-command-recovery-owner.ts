@@ -249,6 +249,7 @@ export async function runWithAgentCommandRecoveryOwner<
       if (params.opts.sessionEffects !== "internal") {
         commandAdmission = await beginSessionWorkAdmission({
           scope: prepared.storePath ?? `agent:${prepared.sessionAgentId}`,
+          isSettling: params.opts.isTerminalOutcomeObserved,
           identities: [prepared.sessionKey, prepared.previousSessionId ?? prepared.sessionId],
           owner: COMMAND_ADMISSION_OWNER,
           serializeOwner: true,

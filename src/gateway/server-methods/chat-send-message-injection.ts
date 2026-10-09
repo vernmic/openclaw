@@ -253,7 +253,8 @@ export async function finalizeAcceptedChatSendMessageInjection(params: {
   attempt: ReplyMessageInjectionAttempt;
   sessionBinding?: Readonly<
     Pick<ChatAbortControllerEntry, "sessionKey" | "sessionId" | "agentId" | "lifecycleGeneration">
-  >;
+  > &
+    Pick<ChatAbortControllerEntry, "terminalOutcomeObserved">;
   context: GatewayRequestContext;
   ctx: RuntimeMsgContext;
   persistUserTurnTranscriptBestEffort: () => Promise<void>;
@@ -366,6 +367,7 @@ export async function finalizeAcceptedChatSendMessageInjection(params: {
     });
     if (indeterminate) {
       broadcastChatError({
+        terminalEntry: params.sessionBinding,
         context,
         runId: clientRunId,
         sessionKey,
@@ -373,7 +375,13 @@ export async function finalizeAcceptedChatSendMessageInjection(params: {
         errorMessage: indeterminate,
       });
     } else {
-      broadcastChatFinal({ context, runId: clientRunId, sessionKey, agentId });
+      broadcastChatFinal({
+        context,
+        runId: clientRunId,
+        sessionKey,
+        agentId,
+        terminalEntry: params.sessionBinding,
+      });
     }
   }
   return true;

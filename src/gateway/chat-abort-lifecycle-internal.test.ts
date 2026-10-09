@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import {
   bindChatAbortTerminalDispatch,
@@ -88,6 +88,41 @@ it("releases the reserved terminal owner when no lifecycle subscriber adopts it"
   ).toEqual({ aborted: true });
   expect(await result).toBe(true);
   expect(entries.has(runId)).toBe(false);
+});
+
+it("marks only the captured registration when an abort listener replaces the run", () => {
+  const { entries, runId, entry } = registeredRun();
+  let replacement: ChatAbortControllerEntry | undefined;
+  entry.controller.signal.addEventListener("abort", () => {
+    entries.delete(runId);
+    replacement = registerChatAbortController({
+      chatAbortControllers: entries,
+      runId,
+      sessionId: entry.sessionId,
+      sessionKey: entry.sessionKey,
+      timeoutMs: 60_000,
+    }).entry;
+  });
+  const broadcast = vi.fn(() => {
+    expect(entry.terminalOutcomeObserved).toBe(true);
+    expect(replacement?.terminalOutcomeObserved).toBeUndefined();
+  });
+  expect(
+    abortChatRunById(
+      {
+        chatAbortControllers: entries,
+        chatRunState: createChatRunState(),
+        removeChatRun: () => undefined,
+        agentRunSeq: new Map(),
+        broadcast,
+        nodeSendToSession: () => {},
+      },
+      { runId, sessionKey: entry.sessionKey },
+    ),
+  ).toEqual({ aborted: true });
+  expect(broadcast).toHaveBeenCalledOnce();
+  expect(replacement).toBeDefined();
+  expect(entries.get(runId)).toBe(replacement);
 });
 
 it.each(["fulfilled", "rejected"] as const)(

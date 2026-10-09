@@ -19,10 +19,12 @@ type DropReason =
 /** One Gateway admission owns the outcome of its queued reply, including concurrent duplicates. */
 export function createChatSendLateFollowupDisposition(params: {
   runId: string;
+  retainSourceIdentity?: boolean;
   originatingChannel: string;
   logGateway: GatewayRequestContext["logGateway"];
   deliver: (params: {
     runId: string;
+    clientRunId: string;
     payloads: ReplyPayload[];
     completion: QueuedFollowupReplyBatch["completion"];
     isCurrent: () => boolean;
@@ -73,13 +75,18 @@ export function createChatSendLateFollowupDisposition(params: {
         }
         if (batch.completion.kind === "progress") {
           progressPayloads.push(...batch.payloads);
-          await params.deliver({ ...batch, isCurrent: () => terminal === "deliver" });
+          await params.deliver({
+            ...batch,
+            clientRunId: params.retainSourceIdentity === false ? batch.runId : params.runId,
+            isCurrent: () => terminal === "deliver",
+          });
           return;
         }
         terminal = "delivering";
         try {
           const result = await params.deliver({
             ...batch,
+            clientRunId: params.retainSourceIdentity === false ? batch.runId : params.runId,
             payloads: [...progressPayloads, ...batch.payloads],
             isCurrent: () => terminal === "delivering",
           });
@@ -106,7 +113,11 @@ export function createChatSendLateFollowupDisposition(params: {
           if (terminal === "pending") {
             terminal = "settled";
           }
-          const retry = createChatSendLateFollowupDisposition(params);
+          // The recovery run owns its own identity; the source is not its terminal owner.
+          const retry = createChatSendLateFollowupDisposition({
+            ...params,
+            retainSourceIdentity: false,
+          });
           retry.recordQueued();
           return retry.deliver;
         },

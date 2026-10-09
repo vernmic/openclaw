@@ -21,7 +21,10 @@ import {
   type AgentRunDelegatedAuthority,
 } from "../infra/agent-run-registry.js";
 import type { ChatAbortDiagnosticReason } from "./chat-abort-diagnostics.js";
-import { removeChatAbortControllerEntry } from "./chat-abort-lifecycle-internal.js";
+import {
+  markChatAbortTerminalOutcome,
+  removeChatAbortControllerEntry,
+} from "./chat-abort-lifecycle-internal.js";
 import type { ChatAbortControllerEntry } from "./chat-abort.types.js";
 import { appendChatCanvasBlocksToMessage } from "./chat-display-projection.canvas.js";
 import { resolveChatRunOwnerAgentId } from "./chat-run-owner.js";
@@ -547,6 +550,7 @@ export function abortChatRunById(
     // Transcript handoff failure cannot prevent an already accepted cancellation.
   }
   active.projectSessionActive = false;
+  markChatAbortTerminalOutcome(active);
   // Reserve terminal ownership before abort listeners run; synchronous caller
   // cleanup must not erase the entry before Gateway observes the event below.
   active.projectSessionTerminalPending = true;

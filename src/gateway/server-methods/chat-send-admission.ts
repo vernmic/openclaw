@@ -390,6 +390,7 @@ export async function admitChatSend(
   try {
     gatewayWorkAdmission = await beginSessionWorkAdmission({
       scope: storePath,
+      isSettling: () => admittedRunAbort?.entry?.terminalOutcomeObserved === true,
       identities: [sessionKey, backingSessionId],
       storeWriterIdentities: [sessionKey, session.sessionTarget.storeKey],
       assertAllowed: () => {

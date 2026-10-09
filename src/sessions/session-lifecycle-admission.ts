@@ -53,6 +53,7 @@ type SessionWorkAdmission = HandoffSessionWorkAdmission & {
   phase: "pending" | "acquired";
   owner?: symbol;
   released: Promise<void>;
+  isSettling?: () => boolean;
 };
 
 type SessionLifecycleMutationOwner = {
@@ -483,6 +484,23 @@ export function getSessionWorkAdmissionOwnerRelease(
     : undefined;
 }
 
+/** Capture terminal owners without waiting on a live turn or a later successor. */
+export function getTerminalSessionWorkAdmissionRelease(
+  params: SessionWorkAdmissionReleaseParams,
+): Promise<void> | false {
+  const current = CURRENT_SESSION_WORK_ADMISSIONS.getStore();
+  const admissions = collectSessionWorkAdmissions(
+    normalizeSessionIdentities(params.scope, params.identities),
+    (admission) => admission.phase === "acquired" && !current?.has(admission),
+  );
+  if ([...admissions].some((admission) => !admission.isSettling?.())) {
+    return false;
+  }
+  return Promise.all([...admissions].map((admission) => admission.released)).then(
+    () => undefined,
+  );
+}
+
 /** Active session identities grouped by their authoritative store/lifecycle scope. */
 export function collectActiveSessionWorkAdmissions(
   owners?: ReadonlySet<object>,
@@ -545,6 +563,8 @@ export async function beginSessionWorkAdmission(params: {
   storeWriterIdentities?: Iterable<string | undefined>;
   /** Stable process-wide identity for owners that must be observable while still pending. */
   owner?: symbol;
+  /** The execution owner has committed its terminal outcome; cleanup still retains this lease. */
+  isSettling?: () => boolean;
   /** Queue behind earlier admissions of the same owner, including pending work. */
   serializeOwner?: boolean;
   resolveGatewayContext?: GatewayContextResolver;
@@ -587,6 +607,7 @@ export async function beginSessionWorkAdmission(params: {
   const admission: SessionWorkAdmission = {
     lifecycleGeneration: getAgentRunLifecycleGeneration(),
     phase: "pending",
+    isSettling: params.isSettling,
     ...(params.owner ? { owner: params.owner } : {}),
     handoffIds: new Set(),
     identities: new Set(identities),

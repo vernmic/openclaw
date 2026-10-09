@@ -92,6 +92,45 @@ describe("chat.send late queued follow-up disposition", () => {
     expect(() => source.deliver.createSourceRetry()).toThrow();
   });
 
+  it("keeps the source identity for queued delivery but not for its retry", async () => {
+    const batch = (runId: string, kind: "progress" | "completed") => ({
+      kind: "queued-followup" as const,
+      completion: { kind },
+      runId,
+      originatingChannel: "webchat",
+      payloads: [{ text: runId }],
+    });
+    const queuedDeliver = vi.fn(async (_delivery: { clientRunId: string }) => ({
+      kind: "delivered" as const,
+    }));
+    const queued = createChatSendLateFollowupDisposition({
+      runId: "source-run",
+      originatingChannel: "webchat",
+      logGateway: { info: vi.fn() } as never,
+      deliver: queuedDeliver,
+    });
+    queued.recordQueued();
+    await queued.deliver(batch("followup-run", "progress"));
+    await queued.deliver(batch("followup-run", "completed"));
+    expect(queuedDeliver.mock.calls.map(([call]) => call.clientRunId)).toEqual([
+      "source-run",
+      "source-run",
+    ]);
+
+    const retryDeliver = vi.fn(async () => ({ kind: "delivered" as const }));
+    const stalled = createChatSendLateFollowupDisposition({
+      runId: "source-run",
+      originatingChannel: "webchat",
+      logGateway: { info: vi.fn() } as never,
+      deliver: retryDeliver,
+    });
+    const retry = stalled.deliver.createSourceRetry();
+    await retry(batch("recovery-run", "completed"));
+    expect(retryDeliver).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ runId: "recovery-run", clientRunId: "recovery-run" }),
+    );
+  });
+
   it("claims delivery before awaiting and records a concurrent duplicate", async () => {
     const info = vi.fn();
     const delivery = createDeferred<{ kind: "delivered" }>();

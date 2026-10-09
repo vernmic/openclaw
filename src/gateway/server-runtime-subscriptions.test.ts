@@ -39,6 +39,7 @@ import {
   lifecycleState,
   readLifecycleState,
   registerSubscriptionChatRun,
+  registerSubscriptionRegistrationTests,
   registerAuditSubscriptionTests,
 } from "./server-runtime-subscriptions.test-support.js";
 import type { SessionRowProjection } from "./session-row-projection.js";
@@ -415,6 +416,11 @@ describe("startGatewayEventSubscriptions", () => {
     ).toEqual({ active: true, runIds: ["run-ops"] });
   });
 
+  registerSubscriptionRegistrationTests((params) => {
+    unsubs = startGatewayEventSubscriptions(params);
+    return unsubs;
+  });
+
   it("drives a registered chat run through the terminal persistence transition table", async () => {
     const runId = "run-lifecycle-table";
     const sessionKey = "agent:main:main";
@@ -542,6 +548,8 @@ describe("startGatewayEventSubscriptions", () => {
         () => ({ ok: true }),
         (error: unknown) => ({ ok: false, error }),
       );
+      // Enter the held dispatch before its registration changes.
+      await firstDispatchEntered.promise;
       const recovery = {
         runId,
         sessionKey,
@@ -570,7 +578,6 @@ describe("startGatewayEventSubscriptions", () => {
       }
       const currentState = readLifecycleState(current);
       try {
-        await firstDispatchEntered.promise;
         if (change !== "removed") {
           await successorDispatchEntered.promise;
         }
