@@ -13,6 +13,7 @@ import {
   getSessionWorkAdmissionOwnerRelease,
   type SessionWorkAdmissionLease,
 } from "../sessions/session-lifecycle-admission.js";
+import { COMMAND_ADMISSION_OWNER } from "./agent-command-admission-owner.js";
 import type { AgentCommandOpts } from "./command/types.js";
 import { MAIN_SESSION_RECOVERY_WORK_ADMISSION_OWNER } from "./main-session-recovery/main-session-recovery-admission.js";
 import { repairMainSessionRecoveryMutation } from "./main-session-recovery/main-session-recovery-lifecycle.js";
@@ -28,7 +29,6 @@ import {
 import { createAgentRunRestartAbortError, isAgentRunDirectAbortReason } from "./run-termination.js";
 
 const log = createSubsystemLogger("agents/agent-command");
-const COMMAND_ADMISSION_OWNER = Symbol.for("openclaw.agentCommand");
 
 type PreparedRecoveryOwnerTarget = {
   sessionAgentId: string;

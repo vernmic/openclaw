@@ -471,11 +471,12 @@ export function getSessionWorkAdmissionRelease(
 
 /** Completion of a named owner that is starting or actively working on a session. */
 export function getSessionWorkAdmissionOwnerRelease(
-  params: SessionWorkAdmissionReleaseParams & { owner: symbol },
+  params: SessionWorkAdmissionReleaseParams & { owner: symbol; phase?: "acquired" },
 ): Promise<void> | undefined {
   const matching = collectSessionWorkAdmissions(
     normalizeSessionIdentities(params.scope, params.identities),
-    (admission) => admission.owner === params.owner,
+    (admission) =>
+      admission.owner === params.owner && (!params.phase || admission.phase === params.phase),
   );
   return matching.size > 0
     ? Promise.all(Array.from(matching, (admission) => admission.released)).then(() => undefined)
