@@ -249,6 +249,7 @@ export async function admitReplyTurn(
               isSettling: () =>
                 operation !== undefined &&
                 (operation.result !== null || hasCommittedReplyOperationOutcome(operation)),
+              getAbortReason: () => operation?.abortSignal.reason,
               resolveGatewayContext,
               identities: [params.sessionKey],
               storeWriterIdentities:
