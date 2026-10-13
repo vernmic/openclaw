@@ -44,6 +44,7 @@ export async function loadSubagentRecoverySession(params: {
   sessionEntry: InternalSessionEntry | undefined;
   currentRead: ReturnType<typeof captureSessionEntryCurrentRead>;
   retained?: Extract<RestartRecoveryResult, { status: "handled" }>["retained"];
+  replacementReason?: string;
 } | null> {
   const sessionKey = params.entry.childSessionKey.trim();
   const agentId = resolveAgentIdFromSessionKey(sessionKey);
@@ -66,6 +67,27 @@ export async function loadSubagentRecoverySession(params: {
       };
     },
   );
+  // Fork adaptation of #170513 without #167966's recorded-owner contract: the incarnation
+  // recorded at launch identifies a replaced child, the same rule as upstream's
+  // "original session incarnation changed" mismatch. A replacement session cannot own
+  // effects for the retained task, but the registry can still settle that task and notify
+  // its original requester.
+  const original = params.entry.childSessionIdentity;
+  if (
+    sessionEntry &&
+    ((original?.sessionId && original.sessionId !== sessionEntry.sessionId) ||
+      (original?.lifecycleRevision && original.lifecycleRevision !== sessionEntry.lifecycleRevision))
+  ) {
+    return {
+      agentId,
+      storePath,
+      sessionEntry,
+      currentRead,
+      replacementReason:
+        "Cannot operate on this subagent because its original session incarnation changed. " +
+        "No child work was changed. Inspect the retained record and original execution evidence before retrying.",
+    };
+  }
   const retained = retainSessionOwner(storePath, sessionKey, sessionEntry?.sessionId);
   if (
     retained ||

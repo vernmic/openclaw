@@ -74,6 +74,21 @@ export async function recoverInterruptedSubagentRow(
     if ((!session && !replayTerminal) || !isCurrent()) {
       return { status: "deferred" };
     }
+    if (session?.replacementReason) {
+      return {
+        status: "terminal",
+        recoveryCurrent: {
+          isHostCurrent: isCurrent,
+          prepare: async () => isCurrent(),
+          onPublished: (published) => {
+            expectedObservation = published;
+          },
+        },
+        error: terminalError ?? session.replacementReason,
+        endedAt: replayTerminal ? entry.execution.endedAt : undefined,
+        suppressSessionEffects: true,
+      };
+    }
     if (!replayTerminal && session?.retained?.isCurrent()) {
       return { status: "handled", retained: session.retained };
     }

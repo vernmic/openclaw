@@ -163,7 +163,45 @@ describe("subagent registry restart recovery", () => {
     });
   });
 
-  describe("orphaned running sessions", () => {
+  describe("orphaned session executions", () => {
+    it.each([
+      { originalRevision: "original-revision", currentRevision: undefined },
+      { originalRevision: "original-revision", currentRevision: "replacement-revision" },
+    ])(
+      "settles a same-sessionId recovery with a changed revision ($originalRevision -> $currentRevision)",
+      async ({ originalRevision, currentRevision }) => {
+        const entry = run({
+          childSessionIdentity: { sessionId: "session-id", lifecycleRevision: originalRevision },
+        });
+        entry.execution.lifecycleGeneration = getAgentEventLifecycleGeneration();
+        rotateAgentEventLifecycleGeneration();
+        Object.assign(mocks.entries[childSessionKey]!, {
+          lifecycleRevision: currentRevision,
+          lifecycleRunId: entry.runId,
+          abortedLastRun: false,
+        });
+        const beforeRun = structuredClone(entry);
+        const beforeSession = structuredClone(mocks.entries[childSessionKey]);
+
+        const result = await recover(entry);
+        expect(result).toMatchObject({
+          status: "terminal",
+          suppressSessionEffects: true,
+          error: expect.stringContaining("original session incarnation changed"),
+        });
+        if (result.status === "terminal") {
+          expect(await result.recoveryCurrent?.prepare()).toBe(true);
+          expect(result.sessionEffects).toBeUndefined();
+        }
+
+        expect(entry).toEqual(beforeRun);
+        expect(mocks.entries[childSessionKey]).toEqual(beforeSession);
+        expect(mocks.applySessionEntryExactReplacements).not.toHaveBeenCalled();
+        expect(dispatchAgent).not.toHaveBeenCalled();
+        expect(restartRecoveryTestHarness.warn).not.toHaveBeenCalled();
+      },
+    );
+
     it.each([60_000, 3 * 24 * 60 * 60_000])(
       "reconciles a hard-kill orphan last observed %i ms ago",
       async (ageMs) => {

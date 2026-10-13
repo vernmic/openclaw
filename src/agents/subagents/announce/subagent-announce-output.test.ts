@@ -568,6 +568,26 @@ describe("buildChildCompletionFindings", () => {
     expect(findings).not.toContain("\u0000");
   });
 
+  it("includes the stopped recovery reason in parent-visible findings", () => {
+    const findings = buildChildCompletionFindings([
+      {
+        childSessionKey: "agent:main:subagent:replaced",
+        task: "interrupted task",
+        createdAt: 1,
+        execution: {
+          interruptionReason: "gateway-restart",
+          outcome: {
+            status: "error",
+            error: "Original child session was replaced; no child work was changed.",
+          },
+        },
+      },
+    ]);
+    expect(findings).toContain(
+      "status: interrupted by gateway restart: Original child session was replaced; no child work was changed.",
+    );
+  });
+
   it("bounds failure metadata while preserving the complete escaped child result", () => {
     const findings = buildChildCompletionFindings([
       {

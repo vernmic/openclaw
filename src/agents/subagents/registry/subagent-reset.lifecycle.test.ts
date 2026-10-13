@@ -40,6 +40,93 @@ const parentKey = "agent:main:main";
 const controllerKey = "agent:main:telegram:default:direct:123";
 const childKey = (id: string) => "agent:main:subagent:" + id;
 
+it.each([false, true])(
+  "reset preserves a replacement child and retires only suppressed terminal work (suppressed=%s)",
+  async (suppressed) => {
+    const storePath = await writeSubagentSessionEntry({
+      stateDir: fixture.stateDir,
+      agentId: "main",
+      sessionKey: parentKey,
+      defaultSessionId: "reset-parent",
+      lifecycleRevision: "reset-parent-revision",
+    });
+    const key = childKey("replaced");
+    await writeSubagentSessionEntry({
+      stateDir: fixture.stateDir,
+      agentId: "main",
+      sessionKey: key,
+      defaultSessionId: "original-child",
+      lifecycleRevision: "original-revision",
+    });
+    await registerSubagentRun({
+      runId: "original-run",
+      childSessionKey: key,
+      childAgentId: "main",
+      sessionEntry: loadSessionEntry({ storePath, sessionKey: key }),
+      requesterSessionKey: parentKey,
+      requesterAgentId: "main",
+      requesterDisplayKey: parentKey,
+      task: "old retained assignment",
+      cleanup: "keep",
+      expectsCompletionMessage: false,
+    });
+    await updateRun("original-run", (entry) => {
+      entry.execution = {
+        status: "terminal",
+        endedAt: 1_000,
+        outcome: { status: "error", error: "original session incarnation changed" },
+        suppressSessionEffects: suppressed ? true : undefined,
+      };
+      entry.completion = { required: false, capturedAt: 1_000, resultText: "stopped" };
+      entry.requesterSettleWake = { status: "pending", attemptCount: 0 };
+    });
+    await patchSessionEntryCore({ storePath, sessionKey: key }, (entry) => ({
+      ...entry,
+      sessionId: "replacement-child",
+      lifecycleRevision: "replacement-revision",
+    }));
+    const replacement = loadSessionEntry({ storePath, sessionKey: key });
+    const interruptReplacement = vi.fn();
+    const replacementAdmission = await beginSessionWorkAdmission({
+      scope: storePath,
+      identities: [key, "replacement-child"],
+      assertAllowed: () => {},
+      onInterrupt: interruptReplacement,
+    });
+    const respond = vi.fn();
+    try {
+      await sessionMutationHandlers["sessions.reset"]!({
+        params: { key: parentKey },
+        context: createChatAbortContext({
+          getRuntimeConfig,
+          getSessionEventSubscriberConnIds: () => new Set(),
+        }) as never,
+        respond,
+        client: { connect: { scopes: ["operator.admin"] } } as never,
+        req: { type: "req", id: "reset-replaced-child", method: "sessions.reset" },
+        isWebchatConnect: () => false,
+      });
+      // Fork adaptation (no #167966): upstream refuses the unsuppressed variant because
+      // #167966 fails closed on any record whose incarnation no longer matches. Without it,
+      // both variants retire only the old notice and leave the replacement child untouched.
+      expect(respond).toHaveBeenCalledWith(true, expect.objectContaining({ ok: true }), undefined);
+      const parent = loadSessionEntry({ storePath, sessionKey: parentKey });
+      expect(parent?.lifecycleRevision).not.toBe("reset-parent-revision");
+      expect(subagentRuns.get("original-run")).toMatchObject({
+        execution: {
+          outcome: { status: "error", error: "original session incarnation changed" },
+        },
+        suppressCompletionDelivery: true,
+      });
+      expect(subagentRuns.get("original-run")?.requesterSettleWake).toBeUndefined();
+      expect(loadSessionEntry({ storePath, sessionKey: key })).toEqual(replacement);
+      expect(interruptReplacement).not.toHaveBeenCalled();
+    } finally {
+      replacementAdmission.release();
+    }
+  },
+);
+
 async function updateRun(runId: string, update: (draft: SubagentRunRecord) => void): Promise<void> {
   await mutateSubagentRuns([runId], (rows) => {
     const current = rows.get(runId);
