@@ -526,6 +526,7 @@ async function runSweepSample(childCount: number): Promise<Sample> {
     completeCleanupBookkeeping: async () => {},
     isCleanupOwnerCurrent: (runId, entry) =>
       isSameSubagentRunOwner(runs.get(runId), entry) || !runs.has(runId),
+    isTerminalTailActive: () => false,
     sessionEffectsHostCurrent: (entry) => entry.execution.suppressSessionEffects !== true,
     shouldSuppressSessionEffects: async (entry) => entry.execution.suppressSessionEffects === true,
     discardTerminalDelivery: () => {},

@@ -121,6 +121,7 @@ export function createSubagentSweeperHarness(
     completeCleanupBookkeeping,
     isCleanupOwnerCurrent: (runId, selected) =>
       isSameSubagentRunOwner(runs.get(runId), selected) || !runs.has(runId),
+    isTerminalTailActive: () => false,
     sessionEffectsHostCurrent: (selected) => selected.execution.suppressSessionEffects !== true,
     shouldSuppressSessionEffects: async (selected) =>
       selected.execution.suppressSessionEffects === true,
