@@ -18,6 +18,8 @@ import { loadSessionEntryReadOnly } from "../../config/sessions/session-accessor
 import { validateSessionTranscriptContextAnchor } from "../../config/sessions/session-accessor.sqlite-model-context.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { clearAgentRunContext, registerAgentRunContext } from "../../infra/agent-run-registry.js";
+import { formatErrorMessage } from "../../infra/errors.js";
+import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { createBackgroundWorkOwner } from "../../process/background-work.js";
 import {
   getGatewayRestartDrainSignal,
@@ -30,12 +32,18 @@ import { recordSkillExperienceReviewOutcome } from "./collection-review-state.js
 import { resolveSkillWorkshopConfig } from "./config.js";
 import { buildSkillExperienceReviewPrompt } from "./experience-review-prompt.js";
 import type { ExperienceReviewCandidate } from "./experience-review-scheduler.js";
+import {
+  captureSkillExperienceReviewBaseline,
+  collectSkillExperienceReviewMessages,
+  recordVisibleSkillExperienceReview,
+} from "./experience-review-visible-session.js";
 import { SKILL_WORKSHOP_MAINTENANCE_TOOLS } from "./maintenance-prompt.js";
 import { assertSkillReviewRunSucceeded } from "./review-outcome.js";
 import { resolveWorkshopSkillsDir } from "./skills-root.js";
 import type { SkillWorkshopProposalMutationBudget } from "./types.js";
 
 const reviews = createBackgroundWorkOwner({ owner: "core:skill-workshop", maxConcurrent: 1 });
+const log = createSubsystemLogger("skills/workshop");
 
 export async function prepareSkillExperienceReviewCandidate(
   candidate: ExperienceReviewCandidate,
@@ -146,6 +154,30 @@ async function runSkillExperienceReviewInner(candidate: ExperienceReviewCandidat
   let outcome: "completed" | "proposed" | "nothing";
   let proposalId: string | undefined;
   let usage: { inputTokens: number; cachedInputTokens: number; outputTokens: number } | undefined;
+  let reviewTranscript:
+    | { sessionManager: SessionManager; baseline: ReadonlySet<string> }
+    | undefined;
+  // The run stays detached; only its own turns are copied into a listable session afterwards.
+  const recordVisibleReview = async (outcomeLabel: string, error?: string) => {
+    if (!reviewTranscript) {
+      return;
+    }
+    try {
+      await recordVisibleSkillExperienceReview({
+        config,
+        source: candidate.source,
+        workspaceDir,
+        outcome: outcomeLabel,
+        messages: collectSkillExperienceReviewMessages(
+          reviewTranscript.sessionManager,
+          reviewTranscript.baseline,
+        ),
+        ...(error ? { error } : {}),
+      });
+    } catch (recordError) {
+      log.warn(`could not record visible skill review session: ${formatErrorMessage(recordError)}`);
+    }
+  };
   // Runtime identity is private; the captured promptCacheKey retains foreground cache affinity.
   registerAgentRunContext(runId, {
     agentId: foregroundPromptContext.agentId,
@@ -166,6 +198,10 @@ async function runSkillExperienceReviewInner(candidate: ExperienceReviewCandidat
       through: candidate.source,
       signal: abortSignal,
     });
+    reviewTranscript = {
+      sessionManager,
+      baseline: captureSkillExperienceReviewBaseline(sessionManager),
+    };
     abortSignal.throwIfAborted();
     const { listWritableWorkshopSkillSummaries } = await import("./workspace-skill-read.js");
     abortSignal.throwIfAborted();
@@ -311,6 +347,7 @@ async function runSkillExperienceReviewInner(candidate: ExperienceReviewCandidat
       },
       outcomeStore,
     );
+    await recordVisibleReview("failed", truncateUtf16Safe(String(error), 300));
     throw error;
   } finally {
     if (executionRoot) {
@@ -329,4 +366,5 @@ async function runSkillExperienceReviewInner(candidate: ExperienceReviewCandidat
     },
     outcomeStore,
   );
+  await recordVisibleReview(outcome);
 }

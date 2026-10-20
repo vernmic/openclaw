@@ -13,10 +13,12 @@ import type { EmbeddedAgentRunResult } from "../../agents/embedded-agent-runner/
 import { resolveAgentRunSessionTarget } from "../../agents/run-session-target.js";
 import { SessionManager } from "../../agents/sessions/index.js";
 import { createWriteTool } from "../../agents/sessions/tools/write.js";
+import { makeAgentAssistantMessage } from "../../agents/test-helpers/agent-message-fixtures.js";
 import { createSkillWorkshopTool } from "../../agents/tools/skill-workshop-tool.js";
 import {
   createSessionEntryWithTranscript,
   deleteSessionEntryLifecycle,
+  listSessionEntriesReadOnly,
   upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -36,6 +38,7 @@ import {
 import { createTrackedTempDirs } from "../../test-utils/tracked-temp-dirs.js";
 import { readSkillCuratorReviewStatus } from "./collection-review-state.test-support.js";
 import type { ExperienceReviewCandidate } from "./experience-review-scheduler.js";
+import { SKILL_EXPERIENCE_REVIEW_SESSION_CATEGORY } from "./experience-review-visible-session.js";
 import { runSkillExperienceReview as runCapturedExperienceReview } from "./experience-review.js";
 import { inspectSkillProposal, listSkillProposals, proposeCreateSkill } from "./service.js";
 import { resolveWorkshopSkillsDir } from "./skills-root.js";
@@ -468,6 +471,74 @@ describe("experience review maintenance", () => {
       /^agent:main:internal-session-effects:skill-workshop-review_/u,
     );
     expect(getAgentRunContext(reviewRunId)).toBeUndefined();
+  });
+
+  it.each([
+    { name: "a settled review", error: undefined },
+    { name: "a failed review", error: "review model refused" },
+  ])("records $name in one listable session without touching the source", async ({ error }) => {
+    const workspaceDir = await tempDirs.make("openclaw-experience-visible-session-");
+    runEmbeddedAgent.mockImplementation(async (params: RunEmbeddedAgentParams) => {
+      await params.sessionManager!.appendMessageAsync({
+        role: "user",
+        content: "Review the finished turn for reusable procedure.",
+        timestamp: Date.now(),
+      });
+      await params.sessionManager!.appendMessageAsync(
+        makeAgentAssistantMessage({
+          model: "gpt-test",
+          content: [{ type: "text", text: "NOTHING_TO_LEARN" }],
+        }),
+      );
+      if (error) {
+        throw new Error(error);
+      }
+      return { meta: { durationMs: 1 } };
+    });
+    const config = { skills: { workshop: { autonomous: { mode: "auto" as const } } } };
+
+    const review = runSkillExperienceReview(reviewFixture(workspaceDir, config));
+    if (error) {
+      await expect(review).rejects.toThrow(error);
+    } else {
+      await review;
+    }
+
+    const sessions = listSessionEntriesReadOnly({ agentId: "main" });
+    const visible = sessions.filter(
+      ({ entry }) => entry.category === SKILL_EXPERIENCE_REVIEW_SESSION_CATEGORY,
+    );
+    expect(visible).toHaveLength(1);
+    expect(visible[0]?.sessionKey).toMatch(/^agent:main:workshop-review:/u);
+    expect(visible[0]?.entry.label).toMatch(
+      new RegExp(`^Skill review \\(${error ? "failed" : "completed"}\\) `, "u"),
+    );
+    const record = await SessionManager.openAsync(
+      await resolveAgentRunSessionTarget({
+        agentId: "main",
+        config,
+        sessionId: visible[0]!.entry.sessionId,
+        sessionKey: visible[0]!.sessionKey,
+        missingSessionKey: "resolve-existing",
+      }),
+      workspaceDir,
+    );
+    const roles = record
+      .getEntries()
+      .flatMap((entry) => (entry.type === "message" ? [entry.message.role] : []));
+    expect(roles).toEqual(error ? ["user", "assistant", "custom"] : ["user", "assistant"]);
+    // The source keeps only its own fixture turn.
+    const source = await SessionManager.openAsync(
+      await resolveAgentRunSessionTarget({
+        agentId: "main",
+        config,
+        sessionId: "foreground-session",
+        sessionKey: "agent:main:main",
+        missingSessionKey: "resolve-existing",
+      }),
+      workspaceDir,
+    );
+    expect(source.getEntries().filter((entry) => entry.type === "message")).toHaveLength(1);
   });
 
   it.each([
