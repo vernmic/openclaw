@@ -61,6 +61,9 @@ const RUNTIME_COORDINATION_ERROR_NAMES = new Set([
   "WorkerWorkspaceReconciliationError",
   "ActiveTurnClaimError",
   "SqliteWorkerError",
+  // Fork: a rebuilding transcript projection is session state, not a model verdict;
+  // every candidate fails identically while it rebuilds.
+  "SessionTranscriptProjectionUnavailableError",
 ]);
 
 export { recordModelFallbackStop } from "./model-fallback-stop.js";

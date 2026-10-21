@@ -566,6 +566,24 @@ describe("isNonProviderRuntimeCoordinationError", () => {
     }
   });
 
+  it("treats a rebuilding transcript projection as coordination, direct and nested", () => {
+    // Fork regression: a rebuilding projection was classified "unknown", so the
+    // fallback loop treated session state as a model verdict and exhausted every
+    // candidate (observed 2026-09-07: 6 candidates burned in 16s).
+    const projection = new Error("Session transcript projection is rebuilding: sess-1");
+    projection.name = "SessionTranscriptProjectionUnavailableError";
+    // Shapes the 10.3 error-graph walk follows (error, cause, errors[], suppressed).
+    for (const error of [
+      projection,
+      new Error("worker turn failed", { cause: projection }),
+      { error: projection },
+      new AggregateError([new Error("other"), projection], "lane task failed"),
+    ]) {
+      expect(isNonProviderRuntimeCoordinationError(error)).toBe(true);
+      expect(resolveModelFallbackError(error)).toEqual({ kind: "coordination", error });
+    }
+  });
+
   it("treats superseded prepared runtime publication as coordination (#156975)", () => {
     const error = new PreparedModelRuntimePublicationSupersededError(
       "prepared model runtime publication was superseded for /tmp/agent",
