@@ -68,6 +68,43 @@ describe("config draft model", () => {
   );
 
   it.each([
+    {
+      roster: "explicit with a stale marker",
+      agents: { ownership: "explicit", entries: { main: {}, research: { default: true } } },
+    },
+    {
+      roster: "legacy multi-agent",
+      agents: { entries: { main: {}, research: { default: true } } },
+    },
+  ])("stages the default agent without a legacy marker ($roster)", async ({ agents }) => {
+    // Fork regression (4d019efc39f): a marker left on any entry of an explicit roster
+    // made every save fail ("agents.ownership=explicit cannot be combined with a legacy
+    // default=true marker"), so the draft could never be persisted.
+    const config = { agents };
+    const request = vi.fn(async (method: string) => {
+      if (method === "config.get") {
+        return { config, raw: JSON.stringify(config), hash: "hash-1", valid: true, issues: [] };
+      }
+      return {};
+    });
+    const { runtimeConfig } = createConfigCapabilityHarness(
+      request as GatewayBrowserClient["request"],
+    );
+    await runtimeConfig.ensureLoaded();
+
+    expect(runtimeConfig.stageDefaultAgent("main")).toBe(true);
+
+    const form = runtimeConfig.state.configForm as Record<string, any>;
+    expect(form.agents.ownership).toBe("explicit");
+    expect(form.agents.entries.main.default).toBeUndefined();
+    expect(form.agents.entries.research.default).toBeUndefined();
+    expect(form.agents.defaults.systemAgent.agentId).toBe("main");
+    // An unset talk.agentId follows systemAgent (src/talk/agent-target.ts); not pinned here.
+    expect(form.talk).toBeUndefined();
+    runtimeConfig.dispose();
+  });
+
+  it.each([
     ["comments", "{\n  // Keep this note.\n  count: 2,\n}\n"],
     ["semantic edit", "{ count: 3, /* keep spacing */ }\n"],
   ])("config.set adopts its revision and rejects stale raw %s by content", async (_edit, raw) => {
