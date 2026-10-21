@@ -39,6 +39,7 @@ import {
   type HeartbeatReplySpy,
   seedHeartbeatScratchForTest,
   seedMainSessionStore,
+  seedSessionStore,
   withTempHeartbeatSandbox,
 } from "./heartbeat-runner.test-utils.js";
 import {
@@ -519,6 +520,70 @@ describe("heartbeat runner busy ownership", () => {
       expect(replySpy).toHaveBeenCalledOnce();
       expect(replySpy.mock.calls[0]?.[1]).toMatchObject({ isHeartbeat: true });
       expect(telegram).not.toHaveBeenCalled();
+    }),
+  );
+});
+
+// Fork (aca2a9a17a7): the shared Main lane gates only the ambient heartbeat owner.
+describe("Main-lane busy gate scoped to the ambient heartbeat owner", () => {
+  const mainLaneBusy = (lane?: string) => (lane === CommandLane.Main ? 1 : 0);
+  function explicitRosterConfig(storePath: string): OpenClawConfig {
+    // Named system owner: the ambient heartbeat (and the Main-lane deferral) belongs to
+    // "main"; "gardener" is a sibling agent.
+    return {
+      session: { store: storePath },
+      agents: {
+        ownership: "explicit",
+        defaults: {
+          heartbeat: { every: "30m", target: "last" },
+          model: { primary: "test/model" },
+          systemAgent: { agentId: "main" },
+        },
+        entries: { main: {}, gardener: {} },
+      },
+      channels: { telegram: { enabled: true, botToken: "fake", allowFrom: ["123"] } },
+    } as OpenClawConfig;
+  }
+  const telegramTarget = {
+    lastChannel: "telegram",
+    lastProvider: "telegram",
+    lastTo: "123",
+  } as const;
+
+  it("runs a sibling agent's scheduled heartbeat while only the Main lane is busy", () =>
+    withTempHeartbeatSandbox(async ({ storePath, replySpy }) => {
+      const cfg = explicitRosterConfig(storePath);
+      await seedSessionStore(storePath, "agent:gardener:main", telegramTarget);
+      replySpy.mockResolvedValue({ text: "HEARTBEAT_OK" });
+      const result = await runHeartbeatOnce({
+        cfg,
+        agentId: "gardener",
+        intent: "scheduled",
+        deps: { getQueueSize: mainLaneBusy, nowMs: () => Date.now(), getReplyFromConfig: replySpy },
+      });
+      expect(result.status).toBe("ran");
+      expect(replySpy).toHaveBeenCalledOnce();
+    }));
+
+  it("still defers the ambient owner's own scheduled heartbeat while the Main lane is busy", () =>
+    withTempHeartbeatSandbox(async ({ storePath, replySpy }) => {
+      const cfg = explicitRosterConfig(storePath);
+      await seedMainSessionStore(storePath, cfg, telegramTarget);
+      const result = await runHeartbeatOnce({
+        cfg,
+        intent: "scheduled",
+        deps: { getQueueSize: mainLaneBusy, nowMs: () => Date.now(), getReplyFromConfig: replySpy },
+      });
+      expectBusy(result, replySpy);
+    }));
+
+  it(
+    "still defers when no system owner is named",
+    heartbeatCase(async ({ seed, run, replySpy }) => {
+      // Polarity guard: without a named owner the resolved owner is not an explicit sibling,
+      // so the Main-lane deferral stays.
+      await seed();
+      expectBusy(await run({ intent: "scheduled" }, { getQueueSize: mainLaneBusy }), replySpy);
     }),
   );
 });
