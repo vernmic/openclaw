@@ -105,6 +105,36 @@ describe("session event wake private poll disposition", () => {
     },
   );
 
+  it.each([
+    { reason: "requests-in-flight", retryMs: 15_000 },
+    { reason: "active-run", retryMs: 15_000 },
+    { reason: "cron-in-progress", retryMs: 1_000 },
+  ])("knocks a busy event wake every 15 s, not 1 s ($reason)", async ({ reason, retryMs }) => {
+    // Fork (c291e400b3c): a 1 s busy knock per pending exec-event wake held the gateway
+    // at one full core during long turns (2026-09-21).
+    const handler = vi.fn<WakeHandler>(async (): ReturnType<WakeHandler> =>
+      handler.mock.calls.length === 1 ? { status: "skipped" as const, reason } : terminalFailure,
+    );
+    setSessionEventWakeHandler(handler);
+    const result = requestSessionEventWakeAndWait(
+      nativePoll({
+        source: "exec-event",
+        intent: "event",
+        reason: "exec-event",
+        scheduledEveryMs: undefined,
+        coalesceMs: 100,
+      }),
+    );
+
+    await vi.advanceTimersByTimeAsync(100);
+    expect(handler).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(retryMs - 1);
+    expect(handler).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(handler).toHaveBeenCalledTimes(2);
+    expect(await result).toBe(terminalFailure);
+  });
+
   it("keeps private dispositions and started work separate across concurrent targets", async () => {
     expect(getSessionEventWakeAbortSignal()).toBeUndefined();
     expect(deferSessionEventWakePoll()).toBe(false);

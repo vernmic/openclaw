@@ -849,4 +849,27 @@ describe("Heartbeat cron and exec event ownership", () => {
       );
     },
   );
+
+  it("delivers at most three exec completions per run and keeps the rest queued", () =>
+    // Fork (c291e400b3c): ten queued completions used to become one ten-item turn that
+    // blocked user input for its whole length.
+    withHeartbeat(async (f) => {
+      const completions = Array.from(
+        { length: 5 },
+        (_, index) => `Exec completed (job-${index}, code 0) :: result ${index}`,
+      );
+      for (const completion of completions) {
+        f.enqueue(completion);
+      }
+      f.replySpy.mockResolvedValue({ text: "Handled the completions" });
+
+      const result = await f.run({ sessionKey: f.sessionKey, reason: "exec-event" });
+
+      expect(result.status).toBe("ran");
+      const body = String(getFirstReplyContext(f.replySpy).Body);
+      for (const index of completions.keys()) {
+        expect(body.includes(`result ${index}`)).toBe(index < 3);
+      }
+      expect(peekSystemEvents(f.sessionKey)).toEqual(completions.slice(3));
+    }));
 });
