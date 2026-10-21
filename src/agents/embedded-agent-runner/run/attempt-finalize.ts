@@ -1,4 +1,7 @@
-import { readActiveTranscriptEntryAnchor } from "../../../config/sessions/session-accessor.js";
+import {
+  readActiveTranscriptEntryAnchor,
+  readNewestActiveMessageTranscriptEntryAnchor,
+} from "../../../config/sessions/session-accessor.js";
 import { OPENCLAW_EMBEDDED_CONTEXT_ENGINE_HOST } from "../../../context-engine/host-compat.js";
 import { createAbortError } from "../../../infra/abort-signal.js";
 import { freezeDiagnosticTraceContext } from "../../../infra/diagnostic-trace-context.js";
@@ -206,7 +209,7 @@ export async function completeEmbeddedAttemptAfterTurn(
     if (attempt.onContextEngineTurnCandidate) {
       const admission = attempt.userTurnTranscriptRecorder?.getAdmissionReceipt();
       const terminalEntryId = resolveTerminalMessageEntryId(sessionManager) ?? undefined;
-      const terminal =
+      const leafTerminal =
         admission && terminalEntryId
           ? readActiveTranscriptEntryAnchor({
               agentId: admission.agentId,
@@ -216,6 +219,28 @@ export async function completeEmbeddedAttemptAfterTurn(
               entryId: terminalEntryId,
             })
           : undefined;
+      // Fork fallback (2026-09-22, CLAUDE-REVIEW-terminal-anchor), behind 10.3's cache-TTL walk:
+      // the leaf can be a non-message record appended after the terminal message (openclaw.cache-ttl
+      // pruning records, openclaw.nested-tool.v1, lifecycle markers), which the leaf-based lookup
+      // cannot anchor. Select - never walk - the newest active MESSAGE from the projection, only
+      // when the leaf lookup failed and the index is clean, and never an anchor from before this
+      // turn's admission position.
+      const terminal =
+        leafTerminal ??
+        (admission
+          ? (() => {
+              const selected = readNewestActiveMessageTranscriptEntryAnchor({
+                agentId: admission.agentId,
+                sessionId: admission.sessionId,
+                sessionKey: admission.sessionKey,
+                storePath: admission.storePath,
+              });
+              if (selected && selected.rawSeq < admission.rawSeq) {
+                return undefined;
+              }
+              return selected;
+            })()
+          : undefined);
       if (admission && terminal) {
         attempt.onContextEngineTurnCandidate({
           boundary: { admission, terminal },
