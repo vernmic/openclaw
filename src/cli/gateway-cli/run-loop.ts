@@ -55,6 +55,11 @@ import { GatewayUpdateSuccessor } from "./update-successor.js";
 const gatewayLog = createSubsystemLogger("gateway");
 const LAUNCHD_SUPERVISED_RESTART_EXIT_DELAY_MS = 1500;
 const HARD_EXIT_WATCHDOG_GRACE_MS = 2_000;
+const INTERACTIVE_STOP_DELIVERY_GRACE_MS = (() => {
+  const value = Number(process.env.OPENCLAW_STOP_DELIVERY_GRACE_MS);
+  return Number.isFinite(value) && value >= 0 ? value : 10_000;
+})();
+const STARTUP_CLEANUP_JOIN_FORCE_CEILING_MS = 45_000;
 
 type ShutdownFailure = { step: string; error: unknown };
 
@@ -123,6 +128,7 @@ export async function runGatewayLoop(params: {
   const updateSuccessor = new GatewayUpdateSuccessor(gatewayLog, eagerLifecycleRuntime);
   let foregroundUpdateClosed = false;
   let forceActiveRestartExit: (() => void) | null = null;
+  let forceActiveStopExit: (() => void) | null = null;
   let pendingStartupForceExitTimer: ReturnType<typeof setTimeout> | null = null;
   let installationReplacement: GatewayInstallationReplacement | undefined;
   let pendingRestartCompletion: GatewayBootLifecycleCompletion | undefined;
@@ -683,13 +689,24 @@ export async function runGatewayLoop(params: {
     }
   };
 
-  const runAcceptedRequest = (acceptedRequest: GatewayRunSignalRequest) => {
+  const runAcceptedRequest = (
+    acceptedRequest: GatewayRunSignalRequest,
+    allowInteractiveDeliveryGrace = false,
+  ) => {
     const { action, restartIntent } = acceptedRequest;
     let budget = startupBudget;
     reportedBudget = budget;
     const isRestart = action !== "stop";
     const restartWithoutSupervisor = action === "restart" && restartDecision.mode === "disabled";
     const acceptedStartupOperations = startupOperations;
+    let joiningStartupCleanup = action === "stop" && server === null;
+    let operatorStopDeadline: number | undefined;
+    let cutDeliveryGraceShort: (() => void) | null = null;
+    const graceInterrupted = allowInteractiveDeliveryGrace
+      ? new Promise<void>((resolve) => {
+          cutDeliveryGraceShort = resolve;
+        })
+      : undefined;
     if (acceptedRequest.action === "stop") {
       // A queued restart still needs startup's close handle. Only an effective
       // stop cancels preflight, including a stop overriding that queued restart.
@@ -706,6 +723,10 @@ export async function runGatewayLoop(params: {
     let lastDrainCounts = "not observed";
     let shutdownFailure: ShutdownFailure | undefined;
     const armForceExitTimer = (forceExitMs: number) => {
+      // A supervisor-budget refresh must not lengthen an operator's requested escape.
+      if (operatorStopDeadline !== undefined) {
+        forceExitMs = Math.min(forceExitMs, Math.max(0, operatorStopDeadline - performance.now()));
+      }
       if (forceExitTimer || (updateSuccessor.waitingForStop && !getManagedUpdateOwner())) {
         return;
       }
@@ -748,6 +769,36 @@ export async function runGatewayLoop(params: {
       };
     }
 
+    if (!isRestart && acceptedRequest.signal === "SIGINT") {
+      forceActiveStopExit = () => {
+        const cut = cutDeliveryGraceShort;
+        if (cut) {
+          cutDeliveryGraceShort = null;
+          gatewayLog.warn(
+            "received SIGINT during shutdown; ending delivery grace (SIGINT again to force exit)",
+          );
+          cut();
+          return;
+        }
+        if (joiningStartupCleanup) {
+          operatorStopDeadline ??= performance.now() + STARTUP_CLEANUP_JOIN_FORCE_CEILING_MS;
+          gatewayLog.warn(
+            "received SIGINT while joining startup cleanup; forcing exit within 45s if cleanup does not settle",
+          );
+        } else {
+          operatorStopDeadline = performance.now();
+          gatewayLog.warn(
+            "received SIGINT during shutdown; forcing exit through the native stop owner",
+          );
+        }
+        // Preserve an earlier native deadline and never restart the 45-second clock.
+        if (shutdownDeadline === undefined || shutdownDeadline > operatorStopDeadline) {
+          clearForceExitTimer();
+          armForceExitTimer(Math.max(0, operatorStopDeadline - performance.now()));
+        }
+      };
+    }
+
     const completion = (async () => {
       if (process.platform === "linux" || process.platform === "darwin") {
         if (budget.nativeStopBudget && !getManagedUpdateOwner()) {
@@ -786,6 +837,47 @@ export async function runGatewayLoop(params: {
       }
       let shutdownStep = "restart-failure-recovery";
       try {
+        if (!isRestart && acceptedRequest.signal === "SIGINT") {
+          if (allowInteractiveDeliveryGrace) {
+            shutdownStep = "interactive-delivery-grace";
+            try {
+              if (cutDeliveryGraceShort && graceInterrupted) {
+                const remaining =
+                  shutdownDeadline === undefined
+                    ? INTERACTIVE_STOP_DELIVERY_GRACE_MS
+                    : Math.max(0, shutdownDeadline - performance.now() - budget.reserveMs);
+                const graceMs = Math.min(INTERACTIVE_STOP_DELIVERY_GRACE_MS, remaining);
+                gatewayLog.info(
+                  `allowing up to ${Math.round(graceMs / 1000)}s for active runs to deliver before closing admission`,
+                );
+                await Promise.race([
+                  eagerLifecycleRuntime.waitForGatewayActiveWork(graceMs),
+                  graceInterrupted,
+                ]);
+              }
+            } catch (error) {
+              gatewayLog.warn(
+                `delivery grace failed; closing admission: ${formatErrorMessage(error)}`,
+              );
+            } finally {
+              cutDeliveryGraceShort = null;
+              eagerLifecycleRuntime.markGatewayDraining(
+                loopCompletion.formatShutdownReason(acceptedRequest),
+              );
+            }
+          }
+          // Admission closes before aborting, so aborted turns cannot admit replacement work.
+          try {
+            if (eagerLifecycleRuntime.createGatewayActiveWorkSnapshot().counts.embeddedRuns > 0) {
+              eagerLifecycleRuntime.abortEmbeddedAgentRun(undefined, {
+                mode: "all",
+                reason: "restart",
+              });
+            }
+          } catch (error) {
+            gatewayLog.warn(`failed to abort active runs for stop: ${formatErrorMessage(error)}`);
+          }
+        }
         // A stop/restart cancels triage at admission and joins its existing cleanup
         // before process exit can strand an external fixing agent.
         await restartRecovery.waitForCleanup();
@@ -793,7 +885,16 @@ export async function runGatewayLoop(params: {
         await drainGatewayActiveWork({
           request: acceptedRequest,
           runtime: eagerLifecycleRuntime,
-          drainTimeoutMs: drainBudget.drainTimeoutMs,
+          drainTimeoutMs:
+            allowInteractiveDeliveryGrace && shutdownDeadline !== undefined
+              ? Math.max(
+                  0,
+                  Math.min(
+                    drainBudget.drainTimeoutMs ?? Infinity,
+                    shutdownDeadline - performance.now() - budget.reserveMs,
+                  ),
+                )
+              : drainBudget.drainTimeoutMs,
           restartDrainDeadlineAt: drainBudget.restartDrainDeadlineAt,
           recordCounts: (counts) => {
             lastDrainCounts = counts;
@@ -842,7 +943,12 @@ export async function runGatewayLoop(params: {
         }
         if (acceptedRequest.action === "stop") {
           shutdownStep = "startup-operations";
-          await acceptedStartupOperations.drain();
+          joiningStartupCleanup = true;
+          try {
+            await acceptedStartupOperations.drain();
+          } finally {
+            joiningStartupCleanup = false;
+          }
         }
         shutdownStep = "gateway-server-close";
         await runWithProcessCleanupBudget(
@@ -916,7 +1022,11 @@ export async function runGatewayLoop(params: {
         clearForceExitTimer();
       }
     })().finally(() => {
-      // A settled restart cannot transfer its deadlines to a later request.
+      // A settled request cannot transfer its escalation or deadlines to a later one.
+      if (action === "stop") {
+        forceActiveStopExit = null;
+        cutDeliveryGraceShort = null;
+      }
       if (action === "restart") {
         forceActiveRestartExit = null;
       }
@@ -1012,6 +1122,10 @@ export async function runGatewayLoop(params: {
         runAcceptedRequest(acceptedRequest);
         return;
       }
+      if (action === "stop" && signal === "SIGINT" && forceActiveStopExit) {
+        forceActiveStopExit();
+        return;
+      }
       gatewayLog.info(
         `received ${signal} during shutdown; ${hostExitRequested ? "finishing shutdown without restart" : "ignoring"}`,
       );
@@ -1032,10 +1146,28 @@ export async function runGatewayLoop(params: {
     if (hostLifecycle !== hostedStop) {
       void hostLifecycle?.retire();
     }
-    // Fence new roots synchronously for stops as well as restarts so admitted
-    // detached finalizers can drain before the signal tears down the gateway.
+    let allowInteractiveDeliveryGrace = false;
+    if (
+      acceptedRequest.action === "stop" &&
+      signal === "SIGINT" &&
+      server &&
+      INTERACTIVE_STOP_DELIVERY_GRACE_MS > 0
+    ) {
+      try {
+        allowInteractiveDeliveryGrace =
+          eagerLifecycleRuntime.createGatewayActiveWorkSnapshot().counts.embeddedRuns > 0;
+      } catch (error) {
+        gatewayLog.warn(
+          `cannot inspect delivery grace; closing admission: ${formatErrorMessage(error)}`,
+        );
+      }
+    }
+    // Only an active interactive stop delays the root fence. Native stops, idle
+    // stops, startup cleanup, and managed-update ownership retain their existing path.
     const drainReason = loopCompletion.formatShutdownReason(acceptedRequest);
-    eagerLifecycleRuntime.markGatewayDraining(drainReason);
+    if (!allowInteractiveDeliveryGrace) {
+      eagerLifecycleRuntime.markGatewayDraining(drainReason);
+    }
     shuttingDown = true;
     gatewayLog.info(`received ${signal}; ${isRestart ? "restarting" : "shutting down"}`);
     if (isRestart) {
@@ -1047,7 +1179,7 @@ export async function runGatewayLoop(params: {
       ]);
     }
     if (action === "stop") {
-      runAcceptedRequest(acceptedRequest);
+      runAcceptedRequest(acceptedRequest, allowInteractiveDeliveryGrace);
       return;
     }
     if (!server && restartResolver && startupFailedWithoutServerHandle) {

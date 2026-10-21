@@ -10,6 +10,7 @@ import { resolveGlobalMap } from "../../shared/global-singleton.js";
 import { captureEnv, deleteTestEnvValue } from "../../test-utils/env.js";
 import { registerExternalHandoffShutdownTests } from "./run-loop-external-handoff.test-support.js";
 import { registerHostedUpdateStopTests } from "./run-loop-hosted-stop.test-support.js";
+import { registerInteractiveGatewayStopTests } from "./run-loop-interactive-stop.test-support.js";
 import { gatewayWorkAdmissionActual, runLoopFixture } from "./run-loop-mocks.test-support.js";
 import { registerGatewayRequestTests } from "./run-loop-request.test-support.js";
 import { registerShutdownBudgetTests } from "./run-loop-shutdown-budget.test-support.js";
@@ -112,6 +113,7 @@ function waitForLoopTurn() {
 }
 
 describe("runGatewayLoop", () => {
+  registerInteractiveGatewayStopTests(runLoopFixture);
   registerGatewayRequestTests(fixtures);
 
   it.each([false, true])(
