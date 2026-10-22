@@ -160,6 +160,132 @@ async function createTranscript(sessionId: string, content = "current") {
 }
 
 describe("context-engine turn outbox", () => {
+  it("retries ready work beyond non-ready session heads without overtaking them", async () => {
+    const database = createDatabase();
+    let firstAdmission: TranscriptTurnAdmission | undefined;
+    for (let index = 0; index < 20; index += 1) {
+      const payload = createPayload({
+        advancementKey: `pending-${index}`,
+        databasePath: database.path,
+        sequence: 1,
+        sessionId: `blocked-${index}`,
+      });
+      enqueueContextEngineTurnIntent({
+        database,
+        engineId: "test",
+        admission: payload.boundary.admission,
+        isHeartbeat: false,
+      });
+      if (index === 0) {
+        firstAdmission = payload.boundary.admission;
+      }
+      if (index === 1) {
+        acceptContextEngineTurnIntent({
+          database,
+          engineId: "test",
+          boundary: payload.boundary,
+          isHeartbeat: false,
+        });
+      }
+    }
+    for (const [key, sessionId, ownerPluginId] of [
+      ["later-in-blocked-session", "blocked-0", undefined],
+      ["foreign-owner", "foreign-session", "another-plugin"],
+      ["ready-tail", "ready-session", undefined],
+    ] as const) {
+      enqueueContextEngineTurnCommit({
+        database,
+        engineId: "test",
+        ownerPluginId,
+        payload: createPayload({
+          advancementKey: key,
+          databasePath: database.path,
+          sequence: 3,
+          sessionId,
+        }),
+      });
+    }
+    const store = openContextEngineTurnOutboxWorkerStore({
+      agentId: database.agentId,
+      path: database.path,
+    });
+    const commitTurn = vi.fn<NonNullable<ContextEngine["commitTurn"]>>(async () => ({
+      status: "committed",
+    }));
+    const params = { store, engine: createEngine(commitTurn), engineId: "test", warn: vi.fn() };
+    const result = await drainContextEngineTurnOutbox(params);
+    expect(commitTurn.mock.calls.map(([turn]) => turn.advancementKey)).toEqual(["ready-tail"]);
+    expect(result.pending).toBe(true);
+    expect(
+      await store.listPendingSessions({ engineId: "test", sessionId: "blocked-0", limit: 1 }),
+    ).toEqual(["blocked-0"]);
+    if (!firstAdmission) {
+      throw new Error("expected the first persisted admission");
+    }
+    await store.discardIntent({ admission: firstAdmission, engineId: "test", onlyAdmitted: true });
+    await drainContextEngineTurnOutbox(params);
+    expect(commitTurn.mock.calls.map(([turn]) => turn.advancementKey)).toEqual([
+      "ready-tail",
+      "later-in-blocked-session",
+    ]);
+    expect(await store.hasPending({ engineId: "test", ownerPluginId: "another-plugin" })).toBe(
+      true,
+    );
+  });
+
+  it("disposes only the exact admitted receipt and preserves advanced or replaced debt", async () => {
+    const database = createDatabase();
+    const store = openContextEngineTurnOutboxWorkerStore({
+      agentId: database.agentId,
+      path: database.path,
+    });
+    for (const kind of [
+      "exact",
+      "accepted",
+      "ready",
+      "different-entry",
+      "different-generation",
+    ] as const) {
+      const payload = createPayload({
+        advancementKey: kind,
+        databasePath: database.path,
+        sequence: 1,
+        sessionId: kind,
+      });
+      const admission = payload.boundary.admission;
+      enqueueContextEngineTurnIntent({ database, engineId: "test", admission, isHeartbeat: false });
+      if (kind === "accepted" || kind === "ready") {
+        acceptContextEngineTurnIntent({
+          database,
+          engineId: "test",
+          boundary: payload.boundary,
+          isHeartbeat: false,
+        });
+      }
+      if (kind === "ready") {
+        enqueueContextEngineTurnCommit({ database, engineId: "test", payload });
+      }
+      await store.discardIntent({
+        engineId: "test",
+        onlyAdmitted: true,
+        admission: {
+          ...admission,
+          ...(kind === "different-entry" ? { entryId: "another-receipt" } : {}),
+          ...(kind === "different-generation" ? { generation: "another-generation" } : {}),
+        },
+      });
+    }
+    const retained = database.db
+      .prepare("SELECT advancement_key FROM context_engine_turn_outbox ORDER BY advancement_key")
+      .all();
+    expect(retained).toEqual([
+      { advancement_key: "accepted" },
+      { advancement_key: "different-entry" },
+      { advancement_key: "different-generation" },
+      { advancement_key: "ready" },
+    ]);
+  });
+
   it("retries only transcript failures that can make progress", () => {
     expect(isRetryableContextEngineTurnReadFailure("projection-unavailable")).toBe(true);
     expect(isRetryableContextEngineTurnReadFailure("too-large")).toBe(false);

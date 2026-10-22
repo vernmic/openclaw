@@ -2,7 +2,10 @@ import {
   readActiveTranscriptEntryAnchor,
   readNewestActiveMessageTranscriptEntryAnchor,
 } from "../../../config/sessions/session-accessor.js";
-import { OPENCLAW_EMBEDDED_CONTEXT_ENGINE_HOST } from "../../../context-engine/host-compat.js";
+import {
+  OPENCLAW_EMBEDDED_CONTEXT_ENGINE_HOST,
+  supportsContextEngineDurableTurnAdvancement,
+} from "../../../context-engine/host-compat.js";
 import { createAbortError } from "../../../infra/abort-signal.js";
 import { freezeDiagnosticTraceContext } from "../../../infra/diagnostic-trace-context.js";
 import { formatErrorMessage } from "../../../infra/errors.js";
@@ -18,6 +21,7 @@ import { countActiveToolExecutions } from "../../embedded-agent-subscribe.handle
 import { isSignalTimeoutReason } from "../../failover-error.js";
 import { runAgentEndSideEffects } from "../../harness/agent-end-side-effects.js";
 import { finalizeHarnessContextEngineTurn } from "../../harness/context-engine-lifecycle.js";
+import { openContextEngineTurnOutboxWorkerStore } from "../../harness/context-engine-turn-outbox-store.js";
 import { bindAgentHarnessHookMessages } from "../../harness/lifecycle-hook-messages.js";
 import type { AgentSession, SessionMessageEntry } from "../../sessions/index.js";
 import { withSessionManagerWrite } from "../../sessions/session-manager-write-admission.js";
@@ -241,6 +245,32 @@ export async function completeEmbeddedAttemptAfterTurn(
               return selected;
             })()
           : undefined);
+      const lease = attempt.contextEngineLogicalTurnLease;
+      if (
+        admission &&
+        !terminal &&
+        lease &&
+        supportsContextEngineDurableTurnAdvancement(lease.engine)
+      ) {
+        log.warn(
+          `[context-engine] skipped turn advancement facts: turn=${admission.logicalTurnId} session=${admission.sessionId}: ${terminalEntryId ? "terminal anchor unresolved" : "no transcript leaf id"}`,
+        );
+        try {
+          await openContextEngineTurnOutboxWorkerStore({
+            agentId: admission.agentId,
+            path: admission.storePath,
+          }).discardIntent({
+            admission,
+            engineId: lease.effectiveEngineId,
+            ownerPluginId: lease.effectiveEnginePluginId,
+            onlyAdmitted: true,
+          });
+        } catch (error) {
+          log.warn(
+            `[context-engine] failed to discard unfinalizable turn intent: ${formatErrorMessage(error)}`,
+          );
+        }
+      }
       if (admission && terminal) {
         attempt.onContextEngineTurnCandidate({
           boundary: { admission, terminal },

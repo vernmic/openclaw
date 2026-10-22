@@ -252,14 +252,30 @@ function blockContextEngineTurnIntent(params: {
 
 function discardContextEngineTurnIntent(params: OutboxKernelParams<"discardIntent">): void {
   const db = outboxDb(params.database);
-  executeSqliteQuerySync(
-    params.database.db,
-    db
-      .deleteFrom("context_engine_turn_outbox")
-      .where("advancement_key", "=", params.admission.logicalTurnId)
-      .where("engine_id", "=", params.engineId)
-      .where("owner_plugin_id", params.ownerPluginId ? "=" : "is", params.ownerPluginId ?? null),
-  );
+  let deletion = db
+    .deleteFrom("context_engine_turn_outbox")
+    .where("advancement_key", "=", params.admission.logicalTurnId)
+    .where("engine_id", "=", params.engineId)
+    .where("owner_plugin_id", params.ownerPluginId ? "=" : "is", params.ownerPluginId ?? null);
+  if (params.onlyAdmitted) {
+    // Missing terminal facts authorize retiring only this admission, never a
+    // later accepted/ready row or a replacement receipt sharing the logical turn.
+    deletion = deletion
+      .where(
+        /* kysely-allow-raw: Compare the closed outbox payload state. */ sql<boolean>`json_extract(payload_json, '$.state') = 'admitted'`,
+      )
+      .where(
+        /* kysely-allow-raw: Admission identity is stored in the closed JSON payload. */ sql<string>`json_extract(payload_json, '$.admission.entryId')`,
+        "=",
+        params.admission.entryId,
+      )
+      .where(
+        /* kysely-allow-raw: Fence the exact receipt generation stored in JSON. */ sql<string>`json_extract(payload_json, '$.admission.generation')`,
+        "=",
+        params.admission.generation,
+      );
+  }
+  executeSqliteQuerySync(params.database.db, deletion);
 }
 
 /**
@@ -426,9 +442,26 @@ function listPendingContextEngineTurnSessions(
   if (filter.sessionId) {
     query = query.where("session_id", "=", filter.sessionId);
   }
+  // Select each session's true non-blocked head before applying the retry
+  // limit. Filtering arbitrary ready rows would let later turns overtake a
+  // non-ready predecessor; filtering after LIMIT would still starve other desks.
+  let sessions = db
+    .selectFrom(query.groupBy("session_id").as("pending"))
+    .innerJoin("context_engine_turn_outbox as head", (join) =>
+      // SQLite rowid is the canonical enqueue identity, not a declared schema column.
+      join.on(
+        /* kysely-allow-raw: Join the implicit enqueue rowid to its per-session minimum. */ sql<boolean>`head.rowid = pending.oldest_enqueue_sequence`,
+      ),
+    )
+    .select("pending.session_id");
+  if (!filter.sessionId) {
+    sessions = sessions.where(
+      /* kysely-allow-raw: Only a ready head can advance without session recovery. */ sql<boolean>`json_extract(head.payload_json, '$.state') = 'ready'`,
+    );
+  }
   return executeSqliteQuerySync(
     database.db,
-    query.groupBy("session_id").orderBy("oldest_enqueue_sequence", "asc").limit(filter.limit),
+    sessions.orderBy("pending.oldest_enqueue_sequence", "asc").limit(filter.limit),
   ).rows.map(({ session_id }) => session_id);
 }
 
@@ -665,7 +698,11 @@ export type ContextEngineTurnOutboxWorkerOperations = {
     output: ClosedTranscriptTurnReadResult["kind"];
   };
   discardIntent: {
-    input: ContextEngineTurnOutboxFilter & { admission: TranscriptTurnAdmission };
+    input: ContextEngineTurnOutboxFilter & {
+      admission: TranscriptTurnAdmission;
+      /** Dispose only the exact unaccepted receipt when terminal facts are unavailable. */
+      onlyAdmitted?: true;
+    };
     output: undefined;
   };
 };

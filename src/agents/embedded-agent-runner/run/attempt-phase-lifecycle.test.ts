@@ -8,9 +8,11 @@ import {
 } from "../../../config/sessions/session-accessor.js";
 import { createUserTurnTranscriptRecorder } from "../../../sessions/user-turn-transcript.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
+import { openOpenClawAgentDatabase } from "../../../state/openclaw-agent-db.js";
 import { runOpenClawAgentWorkerWrite } from "../../../state/openclaw-agent-write-admission.js";
 import { useSessionStoreTempDirs } from "../../../test-utils/session-state-cleanup.js";
 import { FULL_BOOTSTRAP_COMPLETED_CUSTOM_TYPE } from "../../bootstrap-files.js";
+import { openContextEngineTurnOutboxWorkerStore } from "../../harness/context-engine-turn-outbox-store.js";
 import { installSessionToolResultGuard } from "../../session-tool-result-guard.js";
 import { SessionManager } from "../../sessions/session-manager.js";
 import { makeAgentAssistantMessage } from "../../test-helpers/agent-message-fixtures.js";
@@ -288,7 +290,7 @@ describe("embedded attempt phase lifecycle state", () => {
     expect(result.messagesSnapshot).toEqual(messages);
   });
 
-  it.each(["complete", "missing admission", "missing terminal"] as const)(
+  it.each(["complete", "missing admission", "missing terminal", "unavailable projection"] as const)(
     "handles %s candidate anchors without skipping later lifecycle work",
     async (boundary) => {
       const dir = tempDirs.make();
@@ -354,6 +356,34 @@ describe("embedded attempt phase lifecycle state", () => {
         rewrittenEntries: 0,
       }));
       const onContextEngineTurnCandidate = vi.fn();
+      const durableEngine = {
+        info: {
+          id: "test",
+          name: "Test",
+          transcriptSemantics: {
+            currentTurnFence: "before-current-turn-entry-v1" as const,
+            turnAdvancementIdempotency: "atomic-idempotent-v1" as const,
+          },
+        },
+        commitTurn: vi.fn(async () => ({ status: "committed" as const })),
+      };
+      const admission = recorder.getAdmissionReceipt();
+      const database =
+        boundary === "unavailable projection" && admission
+          ? openOpenClawAgentDatabase({ agentId: admission.agentId, path: admission.storePath })
+          : undefined;
+      if (database && admission) {
+        await openContextEngineTurnOutboxWorkerStore({
+          agentId: admission.agentId,
+          path: admission.storePath,
+        }).enqueueIntent({ admission, engineId: "test", isHeartbeat: false });
+        // Model the real unavailable-projection state; neither anchor reader may fabricate facts.
+        database.db
+          .prepare(
+            "UPDATE session_transcript_index_state SET needs_rebuild = 1 WHERE session_id = ?",
+          )
+          .run(admission.sessionId);
+      }
       await completeEmbeddedAttemptAfterTurn(
         {
           attempt: {
@@ -369,6 +399,13 @@ describe("embedded attempt phase lifecycle state", () => {
             contextTokenBudget: 180_000,
             userTurnTranscriptRecorder: recorder,
             onContextEngineTurnCandidate,
+            contextEngineLogicalTurnLease: database
+              ? {
+                  engine: durableEngine,
+                  effectiveEngineId: "test",
+                  effectiveEnginePluginId: undefined,
+                }
+              : undefined,
           } as never,
           activeContextEngine: {
             info: { id: "test", name: "Test" },
@@ -416,6 +453,15 @@ describe("embedded attempt phase lifecycle state", () => {
         },
       );
 
+      if (database && admission) {
+        expect(
+          database.db
+            .prepare(
+              "SELECT advancement_key FROM context_engine_turn_outbox WHERE advancement_key = ?",
+            )
+            .get(admission.logicalTurnId),
+        ).toBeUndefined();
+      }
       if (boundary === "complete") {
         expect(onContextEngineTurnCandidate).toHaveBeenCalledWith(
           expect.objectContaining({

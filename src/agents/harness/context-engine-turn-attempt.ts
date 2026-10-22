@@ -5,6 +5,7 @@ import {
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { supportsContextEngineDurableTurnAdvancement } from "../../context-engine/host-compat.js";
 import type { ContextEngine, ContextEngineSessionTarget } from "../../context-engine/types.js";
+import { createSubsystemLogger } from "../../logging/subsystem.js";
 import type { UserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.types.js";
 import { runContextEngineMaintenance } from "../embedded-agent-runner/context-engine-maintenance.js";
 import type { ContextEngineLogicalTurnLease } from "./context-engine-logical-turn.js";
@@ -16,6 +17,7 @@ import {
 
 const ACCEPTED_TURN_MAX_EVENTS = 20_000;
 const ACCEPTED_TURN_MAX_BYTES = 8 * 1024 * 1024;
+const log = createSubsystemLogger("context-engine-turn-attempt");
 
 export type ContextEngineTurnAttemptFacts = {
   boundary: TranscriptTurnBoundary;
@@ -149,6 +151,9 @@ export async function discardContextEngineTurnAttemptIntent(params: {
       engineId: params.lease.effectiveEngineId,
       ownerPluginId: params.lease.effectiveEnginePluginId,
     });
+    log.debug(
+      `[context-engine] unaccepted turn discard settled: turn=${admission.logicalTurnId} session=${admission.sessionId} aborted=${params.facts.aborted} promptError=${params.facts.promptError} yieldAborted=${params.facts.yieldAborted}`,
+    );
   } catch (error) {
     warn(
       `[context-engine] failed to discard unaccepted turn intent: ${error instanceof Error ? error.message : String(error)}`,
