@@ -1,5 +1,6 @@
 import {
   archiveStaleDashboardEntries,
+  archiveStaleSubagentEntries,
   capEntryCount,
   pruneStaleEntries,
   pruneStaleModelRunEntries,
@@ -16,6 +17,7 @@ type EntryMaintenanceConfig = Pick<
   ResolvedSessionMaintenanceConfig,
   | "pruneAfterMs"
   | "archiveDashboardAfterMs"
+  | "archiveSubagentAfterMs"
   | "modelRunPruneAfterMs"
   | "maxEntries"
   | "preserveRecentMs"
@@ -43,6 +45,7 @@ export function planSessionEntryMaintenance(params: {
   const candidateAges = [
     params.maintenance.pruneAfterMs,
     params.maintenance.archiveDashboardAfterMs,
+    params.maintenance.archiveSubagentAfterMs,
     runModelRunPrune ? params.maintenance.modelRunPruneAfterMs : null,
   ].filter((age): age is number => age != null && age > 0);
   const store = params.readAgeCandidates(
@@ -82,6 +85,10 @@ export function planSessionEntryMaintenance(params: {
   archiveStaleDashboardEntries(store, params.maintenance.archiveDashboardAfterMs, {
     ...ageOptions,
     onArchived: (candidate) => recordArchive(candidate, "dashboard"),
+  });
+  archiveStaleSubagentEntries(store, params.maintenance.archiveSubagentAfterMs ?? null, {
+    ...ageOptions,
+    onArchived: (candidate) => recordArchive(candidate, "age"),
   });
   counts.pruned = pruneStaleEntries(store, params.maintenance.pruneAfterMs, {
     ...ageOptions,

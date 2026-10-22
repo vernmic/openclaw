@@ -3,7 +3,7 @@ import {
   deferSqlitePostCommitPublication,
   stageSqliteTransactionState,
 } from "../../infra/sqlite-post-commit.js";
-import { parseAgentSessionKey } from "../../sessions/session-key-utils.js";
+import { isSubagentSessionKey, parseAgentSessionKey } from "../../sessions/session-key-utils.js";
 import { findOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { readSessionMaintenanceAgeQueries } from "./session-accessor.sqlite-maintenance-age-queries.js";
@@ -211,6 +211,7 @@ function agePolicy(maintenance: ResolvedSessionMaintenanceConfig): string {
   return JSON.stringify([
     maintenance.pruneAfterMs,
     maintenance.archiveDashboardAfterMs,
+    maintenance.archiveSubagentAfterMs ?? null,
     maintenance.preserveRecentMs,
   ]);
 }
@@ -229,6 +230,7 @@ function nextEntryAgeAt(
   for (const [timestamp, age] of [
     [entry?.updatedAt ?? 0, maintenance.pruneAfterMs],
     [activityAt, isDashboardKey(key) ? maintenance.archiveDashboardAfterMs : null],
+    [activityAt, isSubagentSessionKey(key) ? maintenance.archiveSubagentAfterMs : null],
     [activityAt, maintenance.preserveRecentMs],
   ]) {
     if (timestamp != null) {
@@ -295,6 +297,21 @@ export function recordSessionEntryMaintenanceAgeFact(
         next.at,
         nextAgeAt(readActivityAt(row), maintenance.archiveDashboardAfterMs, plannedAt),
       );
+    }
+  }
+  if (maintenance.archiveSubagentAfterMs != null && maintenance.archiveSubagentAfterMs > 0) {
+    const subagentRows = hasCanonicalSessionValidationProjection(database)
+      ? [queries.subagents(undefined), queries.uncertified(undefined)]
+      : [queries.activity(undefined)];
+    for (const rows of subagentRows) {
+      for (const row of rows) {
+        if (isSubagentSessionKey(row.session_key)) {
+          next.at = Math.min(
+            next.at,
+            nextAgeAt(readActivityAt(row), maintenance.archiveSubagentAfterMs, plannedAt),
+          );
+        }
+      }
     }
   }
   const recentAge = maintenance.preserveRecentMs;

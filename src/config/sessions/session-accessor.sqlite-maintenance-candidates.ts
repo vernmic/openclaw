@@ -112,6 +112,7 @@ export function readSessionMaintenanceAgeCandidates(params: {
             ? [eb("updated_at", "<", Date.now() - params.pruneAfterMs)]
             : []),
           eb("session_key", "like", "%dashboard:%"),
+          eb("session_key", "like", "%subagent:%"),
           eb("session_key", "like", "%model-run-%"),
         ]),
       )

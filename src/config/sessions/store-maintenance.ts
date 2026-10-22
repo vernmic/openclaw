@@ -50,6 +50,7 @@ export type ResolvedSessionMaintenanceConfig = {
   mode: SessionMaintenanceMode;
   pruneAfterMs: number;
   archiveDashboardAfterMs: number | null;
+  archiveSubagentAfterMs?: number | null;
   maxEntries: number;
   modelRunPruneAfterMs: number;
   preserveRecentMs?: number | null;
@@ -145,6 +146,7 @@ function resolveHighWaterBytes(
  */
 export function resolveMaintenanceConfigFromInput(
   maintenance?: SessionMaintenanceConfig,
+  subagentArchiveAfterMinutes?: number,
 ): ResolvedSessionMaintenanceConfig {
   const maxDiskBytes = resolveMaxDiskBytes(maintenance);
   return {
@@ -154,6 +156,12 @@ export function resolveMaintenanceConfigFromInput(
       DEFAULT_SESSION_PRUNE_AFTER_MS,
     ),
     archiveDashboardAfterMs: resolveArchiveDashboardAfterMs(maintenance),
+    archiveSubagentAfterMs:
+      subagentArchiveAfterMinutes != null &&
+      Number.isFinite(subagentArchiveAfterMinutes) &&
+      subagentArchiveAfterMinutes > 0
+        ? subagentArchiveAfterMinutes * 60_000
+        : null,
     maxEntries: maintenance?.maxEntries ?? DEFAULT_SESSION_MAX_ENTRIES,
     modelRunPruneAfterMs: DEFAULT_MODEL_RUN_PRUNE_AFTER_MS,
     preserveRecentMs: resolveMaintenanceDuration(maintenance?.preserveRecent, null),
@@ -173,6 +181,7 @@ export function normalizeResolvedMaintenanceConfigInput(
       maintenance.archiveDashboardAfterMs === undefined
         ? DEFAULT_DASHBOARD_ARCHIVE_AFTER_MS
         : maintenance.archiveDashboardAfterMs,
+    archiveSubagentAfterMs: maintenance.archiveSubagentAfterMs ?? null,
     modelRunPruneAfterMs: maintenance.modelRunPruneAfterMs ?? DEFAULT_MODEL_RUN_PRUNE_AFTER_MS,
     preserveRecentMs: maintenance.preserveRecentMs ?? null,
   };
@@ -373,17 +382,37 @@ export function getSessionMaintenanceActivityAt(
   );
 }
 
-/** Archive inactive dashboard sessions while retaining runtime-owned or explicitly active keys. */
+/** Archive inactive dashboard sessions while retaining native runtime protection. */
 export function archiveStaleDashboardEntries(
+  ...[store, archiveAfterMs, opts = {}]: StaleArchiveArguments
+): number {
+  return archiveStaleEntries(store, archiveAfterMs, opts, "dashboard");
+}
+
+/** The store covers session-mode children and children surviving a Gateway restart. */
+export function archiveStaleSubagentEntries(
+  ...[store, archiveAfterMs, opts = {}]: StaleArchiveArguments
+): number {
+  return archiveStaleEntries(store, archiveAfterMs, opts, "subagent");
+}
+
+type StaleArchiveArguments = [
   store: Record<string, SessionEntry>,
   archiveAfterMs: number | null,
-  opts: {
+  opts?: {
     log?: boolean;
     nowMs?: number;
     onArchived?: (params: { key: string; entry: SessionEntry }) => void;
     preserveKeys?: ReadonlySet<string>;
     preserveRecentMs?: number | null;
-  } = {},
+  },
+];
+
+function archiveStaleEntries(
+  store: StaleArchiveArguments[0],
+  archiveAfterMs: StaleArchiveArguments[1],
+  opts: NonNullable<StaleArchiveArguments[2]>,
+  namespace: "dashboard" | "subagent",
 ): number {
   if (archiveAfterMs == null || archiveAfterMs <= 0) {
     return 0;
@@ -394,7 +423,7 @@ export function archiveStaleDashboardEntries(
   for (const [key, entry] of Object.entries(store)) {
     const parsed = parseAgentSessionKey(key);
     if (
-      !parsed?.rest.startsWith("dashboard:") ||
+      !parsed?.rest.startsWith(`${namespace}:`) ||
       shouldPreserveMaintenanceEntry({ key, entry, ...opts })
     ) {
       continue;
@@ -405,12 +434,12 @@ export function archiveStaleDashboardEntries(
     }
     entry.archivedAt = now;
     delete entry.archivedBy;
-    entry.archiveReason = "stale-dashboard";
+    entry.archiveReason = namespace === "dashboard" ? "stale-dashboard" : "age-retention";
     opts.onArchived?.({ key, entry });
     archived += 1;
   }
   if (archived > 0 && opts.log !== false) {
-    log.info("archived stale dashboard session entries", { archived, archiveAfterMs });
+    log.info(`archived stale ${namespace} session entries`, { archived, archiveAfterMs });
   }
   return archived;
 }
@@ -501,7 +530,10 @@ type SessionMaintenanceEntryParams = {
 };
 
 function shouldPreserveNonArchivedMaintenanceEntry(params: SessionMaintenanceEntryParams): boolean {
-  if (params.entry?.pinnedAt !== undefined && isPinnableSessionEntry(params.key, params.entry)) {
+  if (
+    params.entry?.pinnedAt !== undefined &&
+    (isSubagentSessionKey(params.key) || isPinnableSessionEntry(params.key, params.entry))
+  ) {
     return true;
   }
   // A model lock is durable harness ownership, not merely a UI restriction.

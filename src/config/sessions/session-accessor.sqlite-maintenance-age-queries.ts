@@ -42,55 +42,56 @@ function createAgeReaders(database: DatabaseSync) {
     .orderBy("updated_at", "asc")
     .orderBy("session_key", "desc");
 
-  // Seek between canonical agent namespaces in SQLite, then read only dashboard ranges.
+  // Seek between canonical agent namespaces in SQLite, then read only the requested session ranges.
   // Shared session stores may contain several agents; the physical owner is not a key filter.
-  const dashboards = db
-    .withRecursive("age_namespaces", (query) =>
-      query
-        .selectFrom("session_nodes")
-        .select((eb) => eb.fn.min<string | null>("session_key").as("first_key"))
-        .where("session_key", ">=", "agent:")
-        .where("session_key", "<", "agent;")
-        .unionAll(
-          query
-            .selectFrom("age_namespaces")
-            .select((eb) =>
-              eb
-                .selectFrom("session_nodes")
-                .select((inner) => inner.fn.min<string | null>("session_key").as("first_key"))
-                .where(
-                  "session_key",
-                  ">",
-                  /* kysely-allow-raw: skip a complete namespace or only the malformed key, preserving later indexed ranges. */
-                  sql<string>`CASE
+  const namespacedActivity = (namespace: "dashboard" | "subagent") =>
+    db
+      .withRecursive("age_namespaces", (query) =>
+        query
+          .selectFrom("session_nodes")
+          .select((eb) => eb.fn.min<string | null>("session_key").as("first_key"))
+          .where("session_key", ">=", "agent:")
+          .where("session_key", "<", "agent;")
+          .unionAll(
+            query
+              .selectFrom("age_namespaces")
+              .select((eb) =>
+                eb
+                  .selectFrom("session_nodes")
+                  .select((inner) => inner.fn.min<string | null>("session_key").as("first_key"))
+                  .where(
+                    "session_key",
+                    ">",
+                    /* kysely-allow-raw: skip a complete namespace or only the malformed key, preserving later indexed ranges. */
+                    sql<string>`CASE
                     WHEN instr(substr(${eb.ref("age_namespaces.first_key")}, 7), ':') > 0
                     THEN substr(${eb.ref("age_namespaces.first_key")}, 1, 5 + instr(substr(${eb.ref("age_namespaces.first_key")}, 7), ':')) || ';'
                     ELSE ${eb.ref("age_namespaces.first_key")}
                   END`,
-                )
-                .where("session_key", "<", "agent;")
-                .as("first_key"),
-            )
-            .where("first_key", "is not", null),
-        ),
-    )
-    .selectFrom("age_namespaces")
-    // Keep namespace seeks outside the range lookup even before statistics exist.
-    .crossJoin(projection.as("age_rows"))
-    .where(
-      "age_rows.session_key",
-      ">=",
-      /* kysely-allow-raw: this range is a coarse selector; the canonical key decoder still decides dashboard eligibility. */
-      sql<string>`substr(first_key, 1, 6 + instr(substr(first_key, 7), ':')) || 'dashboard:'`,
-    )
-    .where(
-      "age_rows.session_key",
-      "<",
-      /* kysely-allow-raw: exclusive upper bound for the same dashboard namespace. */
-      sql<string>`substr(first_key, 1, 6 + instr(substr(first_key, 7), ':')) || 'dashboard;'`,
-    )
-    .where("archived_at", "is", null)
-    .selectAll("age_rows");
+                  )
+                  .where("session_key", "<", "agent;")
+                  .as("first_key"),
+              )
+              .where("first_key", "is not", null),
+          ),
+      )
+      .selectFrom("age_namespaces")
+      // Keep namespace seeks outside the range lookup even before statistics exist.
+      .crossJoin(projection.as("age_rows"))
+      .where(
+        "age_rows.session_key",
+        ">=",
+        /* kysely-allow-raw: this range is a coarse selector; the canonical key decoder still decides eligibility. */
+        sql<string>`substr(first_key, 1, 6 + instr(substr(first_key, 7), ':')) || ${namespace + ":"}`,
+      )
+      .where(
+        "age_rows.session_key",
+        "<",
+        /* kysely-allow-raw: exclusive upper bound for the same requested namespace. */
+        sql<string>`substr(first_key, 1, 6 + instr(substr(first_key, 7), ':')) || ${namespace + ";"}`,
+      )
+      .where("archived_at", "is", null)
+      .selectAll("age_rows");
   const uncertified = db
     .selectFrom("session_canonical_validation_pending as pending")
     .crossJoin(projection.as("age_rows"))
@@ -109,7 +110,8 @@ function createAgeReaders(database: DatabaseSync) {
         ),
     ),
     activity: prepareSqliteQueryIterator(database, () => ordered.selectAll("age_rows")),
-    dashboards: prepareSqliteQueryIterator(database, () => dashboards),
+    dashboards: prepareSqliteQueryIterator(database, () => namespacedActivity("dashboard")),
+    subagents: prepareSqliteQueryIterator(database, () => namespacedActivity("subagent")),
     // Raw edits remain marked until the canonical owner validates their key/row shape.
     uncertified: prepareSqliteQueryIterator(database, () => uncertified),
   };

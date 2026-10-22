@@ -4,6 +4,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { trackSqliteStatementExecutions } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import {
+  closeOpenClawAgentDatabasesAsync,
   closeOpenClawAgentDatabasesForTest,
   openOpenClawAgentDatabase,
   runOpenClawAgentWriteTransaction,
@@ -41,9 +42,10 @@ const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const DAY_MS = 24 * 60 * 60 * 1000;
 const key = (index: number) => `agent:main:cadence-${index}`;
 
-afterEach(() => {
+afterEach(async () => {
   vi.useRealTimers();
   vi.restoreAllMocks();
+  await closeOpenClawAgentDatabasesAsync();
   closeOpenClawAgentDatabasesForTest();
 });
 
@@ -151,7 +153,8 @@ it.each(["participant", "owner"] as const)(
         return sql.includes('"updated_at" > ?') ? "after" : "unexpected";
       },
     );
-    const expectedProbes = { after: 1, dashboards: 1, pending: 1, unexpected: 0 };
+    // Runtime defaults enable both dashboard and subagent namespace probes.
+    const expectedProbes = { after: 1, dashboards: 2, pending: 2, unexpected: 0 };
     const expectedRows = { after: 1, dashboards: 0, pending: 0, unexpected: 0 };
     try {
       renameEntry(storePath, 0, "warm age facts");
@@ -411,6 +414,7 @@ it("reconsiders a session unarchived without changing its timestamp", () => {
 
 it.each([
   "shared dashboards",
+  "subagent activity",
   "pending dashboard alias",
   "pending namespace prefixes",
   "recent activity",
@@ -430,7 +434,19 @@ it.each([
       sessionId: "protected-primary",
       updatedAt: now - 100 * DAY_MS,
     });
-    if (scenario === "shared dashboards") {
+    if (scenario === "subagent activity") {
+      maintenance.archiveSubagentAfterMs = 60_000;
+      writeSessionEntry(database, "agent:main:subagent:first", {
+        sessionId: "first-child",
+        updatedAt: now - DAY_MS,
+        lastActivityAt: now,
+      });
+      writeSessionEntry(database, "agent:zeta:subagent:second", {
+        sessionId: "second-child",
+        updatedAt: now - DAY_MS,
+        lastInteractionAt: now - 30_000,
+      });
+    } else if (scenario === "shared dashboards") {
       maintenance.archiveDashboardAfterMs = 7 * DAY_MS;
       writeSessionEntry(database, "agent:main:dashboard:first", {
         sessionId: "first-dashboard",
@@ -500,6 +516,7 @@ it.each([
   }, options);
   const expected = {
     "shared dashboards": now + 6 * DAY_MS + 1,
+    "subagent activity": now + 30_000 + 1,
     "pending dashboard alias": now + 7 * DAY_MS + 1,
     "pending namespace prefixes": now + 7 * DAY_MS + 1,
     "recent activity": now + 4 * DAY_MS + 1,
@@ -634,4 +651,39 @@ it("commits a prepared plan after an unrelated foreign write", () => {
     prepared.release();
     writer.close();
   }
+});
+
+it("invalidates child age facts on policy changes and advances them for newly inserted old children", () => {
+  const { database, options } = createStore(0);
+  const now = Date.now();
+  const maintenance = {
+    ...resolveMaintenanceConfigFromInput(),
+    archiveSubagentAfterMs: 60_000,
+  };
+  runOpenClawAgentWriteTransaction((owner) => {
+    writeSessionEntry(owner, "agent:main:subagent:recent", {
+      sessionId: "recent-child",
+      updatedAt: now,
+    });
+    ageFacts.recordSessionEntryMaintenanceAgeFact(owner, maintenance, now);
+  }, options);
+  expect(ageFacts.readSessionEntryMaintenanceAgeFact(database.db, maintenance)?.next.at).toBe(
+    now + 60_001,
+  );
+  expect(
+    ageFacts.readSessionEntryMaintenanceAgeFact(database.db, {
+      ...maintenance,
+      archiveSubagentAfterMs: 120_000,
+    }),
+  ).toBeUndefined();
+  runOpenClawAgentWriteTransaction((owner) => {
+    ageFacts.recordSessionEntryMaintenanceAgeFact(owner, maintenance, now);
+    writeSessionEntry(owner, "agent:main:subagent:historical", {
+      sessionId: "old-child",
+      updatedAt: now - 120_000,
+    });
+  }, options);
+  expect(
+    ageFacts.readSessionEntryMaintenanceAgeFact(database.db, maintenance)?.next.at,
+  ).toBeLessThan(now);
 });

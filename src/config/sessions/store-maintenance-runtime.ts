@@ -9,12 +9,15 @@ import {
 
 export function resolveMaintenanceConfig(): ResolvedSessionMaintenanceConfig {
   let maintenance: SessionMaintenanceConfig | undefined;
+  let subagentArchiveAfterMinutes: number | undefined;
   try {
-    maintenance = getRuntimeConfig().session?.maintenance;
+    const config = getRuntimeConfig();
+    maintenance = config.session?.maintenance;
+    subagentArchiveAfterMinutes = config.agents?.defaults?.subagents?.archiveAfterMinutes;
   } catch {
     // Config may not be available in narrow test/runtime helpers.
   }
-  return resolveMaintenanceConfigFromInput(maintenance);
+  return resolveMaintenanceConfigFromInput(maintenance, subagentArchiveAfterMinutes);
 }
 
 /** Use the canonical runtime policy even when a caller supplies only routing config. */
@@ -23,14 +26,17 @@ export function captureMaintenanceConfigAsyncReader(assertCallerCurrent: () => v
   return Object.assign(
     async () => {
       let maintenance: SessionMaintenanceConfig | undefined;
+      let subagentArchiveAfterMinutes: number | undefined;
       try {
-        maintenance = (await read()).session?.maintenance;
+        const config = await read();
+        maintenance = config.session?.maintenance;
+        subagentArchiveAfterMinutes = config.agents?.defaults?.subagents?.archiveAfterMinutes;
       } catch {
         // Match the native maintenance owner's unavailable-config default, never a retired source.
         read.assertCurrent();
       }
       read.assertCurrent();
-      return resolveMaintenanceConfigFromInput(maintenance);
+      return resolveMaintenanceConfigFromInput(maintenance, subagentArchiveAfterMinutes);
     },
     { assertCurrent: read.assertCurrent },
   );
