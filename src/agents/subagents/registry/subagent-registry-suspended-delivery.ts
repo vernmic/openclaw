@@ -1,3 +1,5 @@
+import { getRuntimeConfig } from "../../../config/config.js";
+import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { captureOpenClawStateWorkerContext } from "../../../state/openclaw-state-worker-context.js";
 import { isDeliverySuspended } from "./subagent-delivery-state.js";
 import { SUBAGENT_ENDED_REASON_COMPLETE } from "./subagent-lifecycle-events.js";
@@ -15,6 +17,35 @@ import { getSubagentRunRuntimeKey } from "./subagent-run-generation.js";
 
 export const SUBAGENT_SUSPENDED_DELIVERY_RETENTION_MS = 7 * 24 * 60 * 60_000;
 const SUBAGENT_SUSPENDED_DELIVERY_WARNING_COUNT = 25;
+const DEFAULT_SUBAGENT_PERMANENT_FAILURE_RETENTION_MINUTES =
+  SUBAGENT_SUSPENDED_DELIVERY_RETENTION_MS / 60_000;
+
+function resolvePermanentFailureRetentionMs(cfg?: OpenClawConfig): number {
+  let config = cfg;
+  if (!config) {
+    try {
+      config = getRuntimeConfig();
+    } catch {
+      config = undefined;
+    }
+  }
+  const minutes =
+    config?.agents?.defaults?.subagents?.permanentFailureRetentionMinutes ??
+    DEFAULT_SUBAGENT_PERMANENT_FAILURE_RETENTION_MINUTES;
+  return minutes * 60_000;
+}
+
+export function resolveSuspendedDeliveryExpiryMs(
+  entry: SubagentRunRecord,
+  cfg?: OpenClawConfig,
+): number {
+  // Outcome and suspension reason differ in persisted records: permanent
+  // disposition can coexist with an expiry reason. Preserve both markers.
+  return entry.delivery?.disposition === "permanent_failure" ||
+    entry.delivery?.suspendedReason === "permanent_failure"
+    ? resolvePermanentFailureRetentionMs(cfg)
+    : SUBAGENT_SUSPENDED_DELIVERY_RETENTION_MS;
+}
 
 export function isSuspendedPendingFinalDelivery(entry: SubagentRunRecord): boolean {
   return typeof entry.execution.endedAt === "number" && isDeliverySuspended(entry);

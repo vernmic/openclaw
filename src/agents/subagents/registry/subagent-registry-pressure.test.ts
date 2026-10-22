@@ -10,6 +10,7 @@ import { captureOpenClawStateWorkerContext } from "../../../state/openclaw-state
 import { observeMainThreadSql } from "../../../test-utils/main-thread-sql-spies.test-support.js";
 import { withOpenClawTestState } from "../../../test-utils/openclaw-test-state.js";
 import { createSubagentRunRecord } from "../../subagent-test-fixtures.test-helpers.js";
+import { resolveSuspendedDeliveryExpiryMs } from "./subagent-registry-suspended-delivery.js";
 import { createSubagentSweeperHarness as createHarness } from "./subagent-registry-sweeper.test-support.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 
@@ -45,6 +46,17 @@ function createSuspendedBacklog(count: number) {
 }
 
 describe("subagent suspended delivery pressure", () => {
+  it("uses the configured permanent-failure retention", () => {
+    const entry = createSubagentRunRecord({
+      runId: "retention-config",
+      delivery: { status: "suspended", suspendedAt: 0, disposition: "permanent_failure" },
+    });
+    expect(
+      resolveSuspendedDeliveryExpiryMs(entry, {
+        agents: { defaults: { subagents: { permanentFailureRetentionMinutes: 360 } } },
+      } as never),
+    ).toBe(6 * 60 * 60_000);
+  });
   beforeEach(() => {
     vi.useFakeTimers();
     resetGatewayWorkAdmission();
@@ -110,6 +122,58 @@ describe("subagent suspended delivery pressure", () => {
     expect(runs.size).toBe(50);
     expect(completeCleanupBookkeeping).not.toHaveBeenCalled();
   });
+
+  it.each([
+    {
+      label: "permanent outcome with expiry reason",
+      disposition: "permanent_failure",
+      suspendedReason: "expiry",
+      hours: 168,
+    },
+    {
+      label: "permanent suspension reason",
+      disposition: undefined,
+      suspendedReason: "permanent_failure",
+      hours: 168,
+    },
+    {
+      label: "recoverable expiry",
+      disposition: "retryable",
+      suspendedReason: "expiry",
+      hours: 168,
+    },
+    {
+      label: "unspecified failure",
+      disposition: undefined,
+      suspendedReason: undefined,
+      hours: 168,
+    },
+  ] as const)(
+    "expires $label at its exact retention boundary",
+    async ({ disposition, suspendedReason, hours }) => {
+      const { entry, runs, discardTerminalDelivery, completeCleanupBookkeeping, sweeper } =
+        createSuspendedBacklog(1);
+      entry.delivery = {
+        status: "suspended",
+        suspendedAt: Date.now() - hours * 60 * 60_000 + 1,
+        ...(disposition ? { disposition } : {}),
+        ...(suspendedReason ? { suspendedReason } : {}),
+      };
+      discardTerminalDelivery.mockImplementation((draft) => {
+        draft.delivery = { status: "discarded" };
+      });
+      await sweeper.sweepOnce();
+      expect(discardTerminalDelivery).not.toHaveBeenCalled();
+      vi.setSystemTime(Date.now() + 1);
+      await sweeper.sweepOnce();
+      expect(discardTerminalDelivery).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ runId: entry.runId }),
+        Date.now(),
+      );
+      expect(completeCleanupBookkeeping).toHaveBeenCalledOnce();
+      expect(runs.get(entry.runId)?.delivery?.status).toBe("discarded");
+    },
+  );
 
   it("counts suspended backlog pressure after same-pass seven-day expiry", async () => {
     const { entry, runs, discardTerminalDelivery, completeCleanupBookkeeping, sweeper, warn } =
