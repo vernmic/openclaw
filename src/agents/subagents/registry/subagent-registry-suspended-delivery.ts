@@ -15,6 +15,16 @@ import { getSubagentRunRuntimeKey } from "./subagent-run-generation.js";
 
 export const SUBAGENT_SUSPENDED_DELIVERY_RETENTION_MS = 7 * 24 * 60 * 60_000;
 const SUBAGENT_SUSPENDED_DELIVERY_WARNING_COUNT = 25;
+const SUBAGENT_PERMANENT_FAILURE_RETENTION_MS = 6 * 60 * 60_000;
+
+export function resolveSuspendedDeliveryExpiryMs(entry: SubagentRunRecord): number {
+  // Outcome and suspension reason differ in persisted records: permanent
+  // disposition can coexist with an expiry reason. Preserve both markers.
+  return entry.delivery?.disposition === "permanent_failure" ||
+    entry.delivery?.suspendedReason === "permanent_failure"
+    ? SUBAGENT_PERMANENT_FAILURE_RETENTION_MS
+    : SUBAGENT_SUSPENDED_DELIVERY_RETENTION_MS;
+}
 
 export function isSuspendedPendingFinalDelivery(entry: SubagentRunRecord): boolean {
   return typeof entry.execution.endedAt === "number" && isDeliverySuspended(entry);

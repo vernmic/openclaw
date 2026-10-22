@@ -108,6 +108,59 @@ describe("subagent suspended delivery pressure", () => {
     expect(completeCleanupBookkeeping).not.toHaveBeenCalled();
   });
 
+  it.each([
+    {
+      label: "permanent outcome with expiry reason",
+      disposition: "permanent_failure",
+      suspendedReason: "expiry",
+      hours: 6,
+    },
+    {
+      label: "permanent suspension reason",
+      disposition: undefined,
+      suspendedReason: "permanent_failure",
+      hours: 6,
+    },
+    {
+      label: "recoverable expiry",
+      disposition: "retryable",
+      suspendedReason: "expiry",
+      hours: 168,
+    },
+    {
+      label: "unspecified failure",
+      disposition: undefined,
+      suspendedReason: undefined,
+      hours: 168,
+    },
+  ] as const)(
+    "expires $label at its exact retention boundary",
+    async ({ disposition, suspendedReason, hours }) => {
+      const { entry, runs, discardTerminalDelivery, completeCleanupBookkeeping, sweeper } =
+        createSuspendedBacklog(1);
+      entry.delivery = {
+        status: "suspended",
+        suspendedAt: Date.now() - hours * 60 * 60_000 + 1,
+        ...(disposition ? { disposition } : {}),
+        ...(suspendedReason ? { suspendedReason } : {}),
+      };
+      discardTerminalDelivery.mockImplementation((draft) => {
+        draft.delivery = { status: "discarded" };
+      });
+      await sweeper.sweepOnce();
+      expect(discardTerminalDelivery).not.toHaveBeenCalled();
+      vi.setSystemTime(Date.now() + 1);
+      await sweeper.sweepOnce();
+      expect(discardTerminalDelivery).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ runId: entry.runId }),
+        Date.now(),
+        "expired",
+      );
+      expect(completeCleanupBookkeeping).toHaveBeenCalledOnce();
+      expect(runs.get(entry.runId)?.delivery?.status).toBe("discarded");
+    },
+  );
+
   it("counts suspended backlog pressure after same-pass seven-day expiry", async () => {
     const { entry, runs, discardTerminalDelivery, completeCleanupBookkeeping, sweeper, warn } =
       createSuspendedBacklog(25);

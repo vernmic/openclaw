@@ -27,7 +27,7 @@ import { isRestoredQueuedFailureSettlementClaimed } from "./subagent-registry-re
 import {
   discardSuspendedPendingFinalDelivery,
   isSuspendedPendingFinalDelivery,
-  SUBAGENT_SUSPENDED_DELIVERY_RETENTION_MS,
+  resolveSuspendedDeliveryExpiryMs,
   warnSuspendedDeliveryPressure,
 } from "./subagent-registry-suspended-delivery.js";
 import {
@@ -310,7 +310,7 @@ export function createSubagentRegistrySweeper(params: {
         }
         if (isSuspendedPendingFinalDelivery(entry)) {
           const expired =
-            now - (entry.delivery?.suspendedAt ?? now) >= SUBAGENT_SUSPENDED_DELIVERY_RETENTION_MS;
+            now - (entry.delivery?.suspendedAt ?? now) >= resolveSuspendedDeliveryExpiryMs(entry);
           if (expired) {
             await discardSuspendedPendingFinalDelivery({
               runId,
