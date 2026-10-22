@@ -258,6 +258,16 @@ export type SessionMcpRuntimeManager = {
   reloadConfig: (params: SessionMcpConfigReload) => Promise<void>;
   disposeAll: () => Promise<void>;
   sweepIdleRuntimes: () => Promise<number>;
+  /** Optional on older host adapters; inspecting capacity never mutates ownership. */
+  readLiveRuntimeSlotStats?: () => {
+    live: number;
+    max: number;
+    registered: number;
+    unregistered: number;
+    creating: number;
+    draining: number;
+    topHolders: Array<{ session: string; slots: number }>;
+  };
   listSessionIds: () => string[];
   /** All managed cache keys (session ids and requester composite keys). */
   listRuntimeKeys: () => string[];

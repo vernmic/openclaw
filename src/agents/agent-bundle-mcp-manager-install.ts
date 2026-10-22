@@ -103,7 +103,7 @@ export function createSessionMcpRuntimeManagerInstall(
       existing.markUsed();
       return existing;
     }
-    const slot = lifecycle.reserveRuntimeSlot(existing, hasServers);
+    const slot = await lifecycle.reserveRuntimeSlot(existing, hasServers);
     store.connectionMetaByRuntimeKey.delete(runtimeKey);
     let runtime: SessionMcpRuntime | undefined;
     let previousCleanup: Promise<void> | undefined;
@@ -118,6 +118,7 @@ export function createSessionMcpRuntimeManagerInstall(
       // revoke changed servers, including calls still using the previous facade.
       store.runtimesBySessionId.delete(runtimeKey);
       if (runtime) {
+        lifecycle.bindRuntimeSlot(runtimeKey, runtime, slot);
         store.runtimesBySessionId.set(runtimeKey, runtime);
       }
       if (existing) {
@@ -128,7 +129,7 @@ export function createSessionMcpRuntimeManagerInstall(
         ...runtimeParams,
         configFingerprint: nextFingerprint,
       });
-      store.runtimeSlots.set(runtime, slot);
+      lifecycle.bindRuntimeSlot(runtimeKey, runtime, slot);
       store.runtimesBySessionId.set(runtimeKey, runtime);
       let publication = configReloadAtAdmission;
       // Keep explicit run snapshots, but fence any publish crossed by acquisition.
@@ -161,6 +162,8 @@ export function createSessionMcpRuntimeManagerInstall(
       store.liveRuntimeSlots.delete(slot);
       lifecycle.ensureIdleSweepTimer();
       throw error;
+    } finally {
+      lifecycle.finishRuntimeSlotReservation(slot);
     }
   };
 

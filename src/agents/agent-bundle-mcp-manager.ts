@@ -410,6 +410,7 @@ export function createSessionMcpRuntimeManager(opts: SessionMcpRuntimeManagerOpt
       return lifecycle.disposeManagedRuntimes();
     },
     sweepIdleRuntimes: lifecycle.sweepIdleRuntimes,
+    readLiveRuntimeSlotStats: lifecycle.readLiveRuntimeSlotStats,
     listSessionIds() {
       return [
         ...new Set(Array.from(store.runtimesBySessionId.values(), (runtime) => runtime.sessionId)),
