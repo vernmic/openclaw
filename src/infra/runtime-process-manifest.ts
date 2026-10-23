@@ -161,6 +161,7 @@ export function createRuntimeProcessEntrypoints(currentModuleUrl: string) {
     shellSnapshotEnvironment: runtimeProcessEntrypoint("agents/shell-snapshot-env.worker"),
     sqliteReadOnly: runtimeProcessEntrypoint("infra/sqlite-readonly-location.worker"),
     sqliteSnapshotStaging: runtimeProcessEntrypoint("infra/sqlite-snapshot-staging.worker"),
+    agentDatabaseSnapshots: runtimeProcessEntrypoint("snapshot/agent-database-snapshots.worker"),
     sqliteReadOnlyNativeResource: runtimeProcessEntrypoint("infra/sqlite-readonly-native-resource"),
     sqliteSourceRevision: runtimeProcessEntrypoint("infra/sqlite-source-revision.worker"),
     sqliteIntegrity: runtimeProcessEntrypoint("infra/sqlite-integrity.worker"),
