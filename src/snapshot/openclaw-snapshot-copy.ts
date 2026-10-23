@@ -63,38 +63,44 @@ export function buildSnapshotValidator(
   };
 }
 
-/** Produce the canonical sanitized, compact, verified copy used by every snapshot provider. */
+/** Produce the canonical sanitized, verified copy; compact by default. */
 export async function createOpenClawSnapshotCopy(params: {
   database: SnapshotDatabaseRef;
   targetPath: string;
+  preserveRowIds?: boolean;
 }): Promise<{ identity: SnapshotDatabaseIdentity; path: string; userVersion: number }> {
   assertNotUpdateCapturePath(params.database.path, resolveStateDir());
   const identity = normalizeSnapshotIdentity(params.database.identity);
-  const result = await createVerifiedSqliteSnapshot({
-    sourcePath: params.database.path,
-    targetPath: params.targetPath,
-    requireNonEmptySource: identity.role !== "generic",
-    transform: async (database) => {
-      if (identity.role === "global") {
-        sanitizeOpenClawGlobalStateSnapshot(database);
-      } else if (identity.role === "agent") {
-        sanitizeOpenClawStateLeaseRows(database);
-      }
-      await embedSessionColdArchivesInSnapshot({
-        database,
-        sourceStorePath: params.database.path,
-      });
-    },
-    validate:
-      identity.role === "global"
-        ? (database, pathname) => assertOpenClawStateDatabaseForMaintenance(database, { pathname })
-        : identity.role === "agent"
-          ? (database, pathname) =>
-              assertOpenClawAgentDatabaseForMaintenance(database, {
-                pathname,
-                agentId: identity.agentId,
-              })
-          : undefined,
-  });
+  const capture = (sourcePath: string) =>
+    createVerifiedSqliteSnapshot({
+      sourcePath,
+      preserveRowIds: params.preserveRowIds,
+      targetPath: params.targetPath,
+      requireNonEmptySource: identity.role !== "generic",
+      transform: async (database) => {
+        if (identity.role === "global") {
+          sanitizeOpenClawGlobalStateSnapshot(database);
+        } else if (identity.role === "agent") {
+          sanitizeOpenClawStateLeaseRows(database);
+        }
+        await embedSessionColdArchivesInSnapshot({
+          database,
+          sourceStorePath: params.database.path,
+        });
+      },
+      validate:
+        identity.role === "global"
+          ? (database, pathname) => assertOpenClawStateDatabaseForMaintenance(database, { pathname })
+          : identity.role === "agent"
+            ? (database, pathname) =>
+                assertOpenClawAgentDatabaseForMaintenance(database, {
+                  pathname,
+                  agentId: identity.agentId,
+                })
+            : undefined,
+    });
+  // Upstream createVerifiedSqliteSnapshot preserves row IDs natively (it prepares a private
+  // read-only image with source artifacts kept), so restore points capture the live path directly.
+  const result = await capture(params.database.path);
   return { identity, ...result };
 }
