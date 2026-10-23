@@ -1,6 +1,8 @@
 import { containsAsciiControlCharacter } from "@openclaw/normalization-core/string-normalization";
 import { resolveStateDir } from "../config/paths.js";
 import { embedSessionColdArchivesInSnapshot } from "../config/sessions/session-cold-storage-backup.js";
+import { withPreparedSqliteSnapshot } from "../infra/sqlite-readonly-location-cleanup.js";
+import { prepareSqliteReadOnlyLocation } from "../infra/sqlite-snapshot-source.js";
 import {
   createVerifiedSqliteSnapshot,
   type SqliteSnapshotValidator,
@@ -52,29 +54,41 @@ export function buildSnapshotValidator(
   return () => undefined;
 }
 
-/** Produce the canonical sanitized, compact, verified copy used by every snapshot provider. */
+/** Produce the canonical sanitized, verified copy; compact by default. */
 export async function createOpenClawSnapshotCopy(params: {
   database: SnapshotDatabaseRef;
   targetPath: string;
+  preserveRowIds?: boolean;
 }): Promise<{ identity: SnapshotDatabaseIdentity; path: string; userVersion: number }> {
   assertNotUpdateCapturePath(params.database.path, resolveStateDir());
   const identity = normalizeSnapshotIdentity(params.database.identity);
-  const result = await createVerifiedSqliteSnapshot({
-    sourcePath: params.database.path,
-    targetPath: params.targetPath,
-    requireNonEmptySource: identity.role !== "generic",
-    transform: async (database) => {
-      if (identity.role === "global") {
-        sanitizeOpenClawGlobalStateSnapshot(database);
-      } else if (identity.role === "agent") {
-        sanitizeOpenClawStateLeaseRows(database);
-      }
-      await embedSessionColdArchivesInSnapshot({
-        database,
-        sourceStorePath: params.database.path,
-      });
-    },
-    validate: buildSnapshotValidator(identity),
-  });
+  const capture = (sourcePath: string) =>
+    createVerifiedSqliteSnapshot({
+      sourcePath,
+      preserveRowIds: params.preserveRowIds,
+      targetPath: params.targetPath,
+      requireNonEmptySource: identity.role !== "generic",
+      transform: async (database) => {
+        if (identity.role === "global") {
+          sanitizeOpenClawGlobalStateSnapshot(database);
+        } else if (identity.role === "agent") {
+          sanitizeOpenClawStateLeaseRows(database);
+        }
+        await embedSessionColdArchivesInSnapshot({
+          database,
+          sourceStorePath: params.database.path,
+        });
+      },
+      validate: buildSnapshotValidator(identity),
+    });
+  // Acquire a committed online image in the native isolated child. Direct
+  // artifact-preserving copies of a live WAL can retry forever under activity.
+  // Preserve IDs on this private image without borrowing the Gateway's writer.
+  const result = params.preserveRowIds
+    ? await withPreparedSqliteSnapshot(
+        await prepareSqliteReadOnlyLocation(params.database.path, { allowLiveOwner: false }),
+        capture,
+      )
+    : await capture(params.database.path);
   return { identity, ...result };
 }

@@ -84,6 +84,8 @@ const VALIDATION_STAGING_ENTRIES = new Set([
 ]);
 type LocalSqliteSnapshotProviderOptions = {
   readonly allowedDatabaseRoles?: readonly SnapshotDatabaseIdentity["role"][];
+  /** Recurring restore points preserve implicit row IDs; existing providers keep compaction. */
+  readonly preserveRowIds?: boolean;
   readonly repositoryPath: string;
   readonly validationRootPath?: string;
   readonly now?: () => Date;
@@ -91,7 +93,9 @@ type LocalSqliteSnapshotProviderOptions = {
 
 export function createLocalSqliteSnapshotProvider(
   options: LocalSqliteSnapshotProviderOptions,
-): SqliteSnapshotProvider {
+): SqliteSnapshotProvider & {
+  createRetained(database: SnapshotDatabaseRef, keep: number): Promise<SnapshotResult>;
+} {
   return new LocalSqliteSnapshotProvider(options);
 }
 
@@ -100,6 +104,7 @@ class LocalSqliteSnapshotProvider implements SqliteSnapshotProvider {
   readonly #repositoryPath: string;
   readonly #validationRootPath: string;
   readonly #now: () => Date;
+  readonly #preserveRowIds: boolean;
 
   constructor(options: LocalSqliteSnapshotProviderOptions) {
     this.#allowedDatabaseRoles = options.allowedDatabaseRoles;
@@ -108,6 +113,7 @@ class LocalSqliteSnapshotProvider implements SqliteSnapshotProvider {
       options.validationRootPath ?? path.dirname(this.#repositoryPath),
     );
     this.#now = options.now ?? (() => new Date());
+    this.#preserveRowIds = options.preserveRowIds === true;
   }
 
   async create(database: SnapshotDatabaseRef): Promise<SnapshotResult> {
@@ -148,6 +154,7 @@ class LocalSqliteSnapshotProvider implements SqliteSnapshotProvider {
       const result = await createOpenClawSnapshotCopy({
         database: { path: sourcePath, identity },
         targetPath: artifactPath,
+        preserveRowIds: this.#preserveRowIds,
       });
       applyPrivateModeSync(artifactPath, SNAPSHOT_FILE_MODE);
       const artifact = await hashSnapshotArtifact(stagingDir);
@@ -262,6 +269,62 @@ class LocalSqliteSnapshotProvider implements SqliteSnapshotProvider {
         await syncDirectoryIfSupported(trustedRepositoryPath).catch(() => undefined);
       }
     }
+  }
+
+  /** Rotate only after the native create owner has verified and committed its artifact. */
+  async createRetained(database: SnapshotDatabaseRef, keep: number): Promise<SnapshotResult> {
+    if (!Number.isSafeInteger(keep) || keep < 1) {
+      throw new Error("SQLite snapshot retention must retain at least one restore point");
+    }
+    const snapshot = await this.create(database);
+    const snapshots = await this.list();
+    // Retention belongs to one named source repository, never a mixed backup repository.
+    for (const candidate of snapshots) {
+      const current = candidate.manifest.database;
+      const expected = snapshot.manifest.database;
+      if (
+        current.role !== expected.role ||
+        current.basename !== expected.basename ||
+        (current.role === "agent" &&
+          (expected.role !== "agent" || current.agentId !== expected.agentId)) ||
+        (current.role === "generic" && (expected.role !== "generic" || current.id !== expected.id))
+      ) {
+        throw new Error("SQLite retained snapshot repository contains another database owner");
+      }
+    }
+    // Pin the newly certified point even if the wall clock moved backwards.
+    const previous = snapshots.filter((candidate) => candidate.ref.path !== snapshot.ref.path);
+    const repositoryIdentity = await fs.lstat(this.#repositoryPath);
+    const trustedRepository = await assertTrustedStagingRoot(
+      repositoryIdentity,
+      this.#repositoryPath,
+    );
+    for (const candidate of previous.slice(keep - 1)) {
+      await assertDirectoryIdentity(trustedRepository, repositoryIdentity);
+      const snapshotPath = await this.#resolveSnapshotDirectory(candidate.ref);
+      const directory = await pinDirectory(snapshotPath, { label: "Retained SQLite snapshot" });
+      try {
+        await assertSnapshotContents(snapshotPath);
+        const entries = new Map<string, Stats>();
+        for (const entry of [SNAPSHOT_SQLITE_FILENAME, SNAPSHOT_MANIFEST_FILENAME]) {
+          entries.set(entry, await fs.lstat(path.join(snapshotPath, entry)));
+        }
+        await directory.assertCurrent();
+        if (
+          !(await removePublishedSnapshotDirectoryIfOwned(
+            snapshotPath,
+            await fs.lstat(snapshotPath),
+            entries,
+          ))
+        ) {
+          throw new Error(`Retained SQLite snapshot changed during rotation: ${snapshotPath}`);
+        }
+      } finally {
+        await directory.close();
+      }
+    }
+    await syncDirectoryIfSupported(trustedRepository);
+    return snapshot;
   }
 
   async verify(snapshot: SnapshotRef): Promise<SnapshotVerificationResult> {

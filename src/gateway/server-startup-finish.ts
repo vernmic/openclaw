@@ -660,6 +660,8 @@ export async function finishGatewayStartup(params: {
         startupTrace.detail("memory.post-ready", collectGatewayProcessMemoryUsageMb());
       },
     });
+    const { startGatewayAgentDatabaseSnapshots } = await import("./server-agent-db-snapshots.js");
+    registerGatewayLifetimeSidecars(startGatewayAgentDatabaseSnapshots(runtime, log));
     // This Gateway may still import boot-generation code after an install retires
     // it. Capture those paths before the idle delay; cleanup also protects the new ledger.
     const startupInstallPaths = [
