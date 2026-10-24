@@ -1,17 +1,19 @@
 import fs from "node:fs";
 import path from "node:path";
-import { executeSqliteQuerySync } from "../../infra/kysely-sync.js";
+import { executeSqliteQuerySync, getNodeSqliteKysely } from "../../infra/kysely-sync.js";
 import { assertExistingDatabaseIdentity } from "../../infra/sqlite-worker-identity.js";
 import { readOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
 import {
   withOpenClawAgentDatabaseReadOnly,
   type OpenClawAgentReadOnlyDatabase,
 } from "../../state/openclaw-agent-db-readonly.js";
+import type { DB as OpenClawAgentKyselyDatabase } from "../../state/openclaw-agent-db.generated.js";
 import {
   runOpenClawAgentWriteTransaction,
   type OpenClawAgentDatabase,
   type OpenClawAgentDatabaseOptions,
 } from "../../state/openclaw-agent-db.js";
+import { archiveHeldByReclamation } from "../../state/openclaw-agent-reclamation-queue.js";
 import { tableExists } from "../../state/openclaw-state-db-schema-helpers.js";
 import { readReferencedSessionIds } from "./session-accessor.sqlite-lifecycle-state.js";
 import { getSessionKysely } from "./session-accessor.sqlite-scope.js";
@@ -29,7 +31,9 @@ export function readSessionArchivePruningInDatabase(
   if (!tableExists(database.db, "session_transcript_archives")) {
     return [];
   }
-  const db = getSessionKysely(database.db);
+  const db = getNodeSqliteKysely<
+    Pick<OpenClawAgentKyselyDatabase, "session_transcript_archives" | "session_reclamation_jobs">
+  >(database.db);
   const rows = executeSqliteQuerySync(
     database.db,
     db
@@ -46,13 +50,35 @@ export function readSessionArchivePruningInDatabase(
         "session_key",
       ])
       .where("published_at", "is not", null)
+      .where((eb) =>
+        eb.not(
+          eb.exists(
+            eb
+              .selectFrom("session_reclamation_jobs")
+              .select("id")
+              .whereRef(
+                "session_reclamation_jobs.session_id",
+                "=",
+                "session_transcript_archives.session_id",
+              )
+              .whereRef(
+                "session_reclamation_jobs.generation",
+                "=",
+                "session_transcript_archives.generation",
+              )
+              .where("state", "=", "pending"),
+          ),
+        ),
+      )
       .orderBy("created_at", "asc")
       .orderBy("session_id", "asc")
       .orderBy("generation", "asc")
       .limit(limit),
   ).rows;
   return rows.flatMap((row) =>
-    row.published_at === null ? [] : [{ ...row, published_at: row.published_at }],
+    row.published_at === null || archiveHeldByReclamation(database, row.session_id, row.generation)
+      ? []
+      : [{ ...row, published_at: row.published_at }],
   );
 }
 
@@ -105,6 +131,7 @@ export function pruneSessionArchivesByRetentionInDatabase(
       for (const row of input.candidates) {
         const archivePath = path.resolve(directory, row.archive_name);
         if (
+          archiveHeldByReclamation(transactionDb, row.session_id, row.generation) ||
           referenced.has(row.session_id) ||
           path.dirname(archivePath) !== directory ||
           path.basename(archivePath) !== row.archive_name ||
@@ -205,6 +232,9 @@ export function deletePublishedSessionArchiveInDatabase(
       }
       admit("transaction");
       const db = getSessionKysely(transactionDb.db);
+      if (archiveHeldByReclamation(transactionDb, row.session_id, row.generation)) {
+        throw new Error("Archive is held by unfinished reclamation");
+      }
       // A peer or cold reopen may change publication while unlink is in flight.
       const deletion = executeSqliteQuerySync(
         transactionDb.db,

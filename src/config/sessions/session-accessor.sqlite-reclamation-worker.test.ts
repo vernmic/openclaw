@@ -19,7 +19,10 @@ import {
   runOpenClawAgentWriteTransaction,
 } from "../../state/openclaw-agent-db.js";
 import * as stateCache from "../../state/openclaw-state-db-cache.js";
-import { openOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
+import {
+  closeOpenClawStateDatabaseByPathAsync,
+  openOpenClawStateDatabase,
+} from "../../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import * as sqliteArchive from "./session-accessor.sqlite-archive.js";
@@ -344,6 +347,8 @@ test.each(["established", "first-created"] as const)(
         ).toEqual([]);
       } finally {
         vi.restoreAllMocks();
+        // The nested shared owner is outside the fixture's primary state cleanup.
+        await closeOpenClawStateDatabaseByPathAsync(sharedPath);
       }
     });
   },

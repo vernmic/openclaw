@@ -1,5 +1,6 @@
 import { extractSqliteTableSchema } from "../infra/sqlite-schema-sql.js";
 import { TRANSCRIPT_FTS_ROW_SCHEMA_VERSION } from "./openclaw-agent-db-contract.js";
+import { withoutReclamationSchema } from "./openclaw-agent-reclamation-schema.js";
 import { withoutSessionEntrySnapshotsSchema } from "./openclaw-agent-session-snapshots-schema.js";
 import { withDeployedTranscriptFtsRowSchema } from "./openclaw-agent-transcript-fts-schema.js";
 
@@ -40,7 +41,7 @@ const LEGACY_STORAGE_TABLES = {
 
 /** Preserve historical storage contracts before the admitted schema-23 cutover. */
 export function withLegacyAgentStorageSchema(schema: string, version = 21): string {
-  let historicalSchema = withoutSessionEntrySnapshotsSchema(schema);
+  let historicalSchema = withoutSessionEntrySnapshotsSchema(withoutReclamationSchema(schema));
   for (const [table, legacySchema] of Object.entries(LEGACY_STORAGE_TABLES)) {
     historicalSchema = historicalSchema.replace(
       extractSqliteTableSchema(historicalSchema, table),

@@ -189,6 +189,9 @@ describe("runStartupSessionMigration", () => {
       let handedOff: ReturnType<typeof getOpenClawAgentDatabaseIfOpen>;
       let reconciled: ReturnType<typeof openOpenClawAgentDatabase> | undefined;
       const failure = new Error("projection reconciliation failed");
+      const recoverSessionReclamations = vi.fn(
+        async (_params: { database: OpenClawAgentDatabaseOptions }) => {},
+      );
       const reconcileSessionTranscriptIndexes = vi.fn(
         async (databaseOptions: OpenClawAgentDatabaseOptions) => {
           handedOff = getOpenClawAgentDatabaseIfOpen(databaseOptions);
@@ -204,13 +207,21 @@ describe("runStartupSessionMigration", () => {
           cfg: { agents: { entries: { main: {} } } },
           env,
           log: makeLog(),
-          deps: { reconcileSessionTranscriptIndexes },
+          deps: { reconcileSessionTranscriptIndexes, recoverSessionReclamations },
         });
         if (outcome === "failed") {
           await expect(startup).rejects.toBe(failure);
         } else {
           await startup;
         }
+        expect(recoverSessionReclamations).toHaveBeenCalledOnce();
+        expect(recoverSessionReclamations.mock.calls[0]?.[0].database).toMatchObject({
+          agentId: "main",
+          env,
+        });
+        expect(recoverSessionReclamations.mock.invocationCallOrder[0]).toBeLessThan(
+          reconcileSessionTranscriptIndexes.mock.invocationCallOrder[0]!,
+        );
         expect(reconcileSessionTranscriptIndexes).toHaveBeenCalledOnce();
         expect(handedOff).toBe(reconciled);
         expect(

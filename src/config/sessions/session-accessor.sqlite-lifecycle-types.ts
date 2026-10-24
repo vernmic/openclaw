@@ -204,6 +204,27 @@ export type SessionMaintenanceLiveProtection = Pick<
   "activeSessionKeys" | "preservation"
 >;
 
+export type ReclamationPhaseRequest = {
+  id: string;
+  ownerId: string;
+  phase: "guard" | "archive" | "delete" | "complete";
+  expectedOwnerId?: string;
+  archiveSha256?: string;
+};
+export type ReclamationPhaseReceipt = {
+  id: string;
+  ownerId: string;
+  cursor: number;
+  state: "pending" | "done" | "declined" | "failed";
+  error: string | null;
+};
+export type ReclamationRecoveryRow = ReclamationPhaseReceipt & {
+  planJson: string;
+  sourcePath: string;
+  sourceIdentity: string;
+  sourceBirthtime: string | null;
+  archiveDirectory: string;
+};
 type SessionReclamationPlanBase = {
   descendantRunBasis?: SubagentRunsDurableBasis;
   maintenanceRunBasis?: SubagentMaintenanceDurableBasis;
@@ -238,6 +259,12 @@ export type SessionMaintenanceMetadataResult =
     };
 
 export type SqliteSessionReclamationPlan =
+  | (SessionReclamationPlanBase & {
+      kind: "reclamation-pending";
+      archiveDirectory: string;
+      afterId?: string;
+      reject?: { id: string; expectedOwnerId: string; error: string; state: "declined" | "failed" };
+    })
   | (SessionReclamationPlanBase & {
       kind: "lifecycle-projection-plan";
       input: LifecycleRemovalProjectionInput;
@@ -282,12 +309,14 @@ export type SqliteSessionReclamationPlan =
   | (SessionReclamationPlanBase & {
       diskBudget: { preserveRecentMs?: number | null };
       kind: "history-eviction";
+      reclamation?: ReclamationPhaseRequest;
       protectedSessionIds: string[];
       sessionId: string;
     })
   | (SessionReclamationPlanBase & {
       deleteParams: ReclamationDeleteParams;
       kind: "historical-generation";
+      reclamation?: ReclamationPhaseRequest;
       preparedTargetSnapshot: SqliteLifecycleTargetSnapshot;
       protectedSessionIds: string[];
       sessionId: string;
@@ -298,7 +327,8 @@ export type SqliteArchiveReclamationPlan = Exclude<
   SessionMaintenanceMetadataCommand
 >;
 
-export type SqliteSessionReclamationResult =
+type SqliteSessionReclamationResultValue =
+  | { kind: "reclamation-pending"; value: ReclamationRecoveryRow[] }
   | { kind: "lifecycle-projection-plan"; value: ProjectedLifecycleMutation }
   | { kind: "lifecycle-projection-commit"; value: ProjectedLifecycleCommitResult }
   | { kind: "lifecycle-projection-count"; value: number }
@@ -325,10 +355,12 @@ export type SqliteSessionReclamationResult =
     }
   | {
       kind: "history-eviction";
+      reclamation?: ReclamationPhaseRequest;
       value: { archivedTranscripts: SessionLifecycleArchivedTranscript[]; deleted: boolean };
     }
   | {
       kind: "historical-generation";
+      reclamation?: ReclamationPhaseRequest;
       value: {
         archivedTranscripts: SessionLifecycleArchivedTranscript[];
         deleted: boolean;
@@ -402,4 +434,8 @@ export type ProjectedLifecycleMutation = {
     resetBoundary?: SessionResetBoundaryWrite;
     sessionKey: string;
   }>;
+};
+
+export type SqliteSessionReclamationResult = SqliteSessionReclamationResultValue & {
+  reclamationReceipt?: ReclamationPhaseReceipt;
 };

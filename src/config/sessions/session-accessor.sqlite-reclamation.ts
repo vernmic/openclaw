@@ -50,6 +50,7 @@ import type {
 import { reclaimSessionMaintenanceInTransaction } from "./session-accessor.sqlite-maintenance-transaction.js";
 import { deleteSessionDeliveryArtifacts } from "./session-accessor.sqlite-node-artifacts.js";
 import { commitProjectedSessionEntryRemovalsInDatabase } from "./session-accessor.sqlite-projection-state.js";
+import { reclaimResumableSessionInTransaction } from "./session-accessor.sqlite-reclamation-phased-transaction.js";
 import { isRecentHistoricalSessionId } from "./session-accessor.sqlite-references.js";
 import { getSessionKysely } from "./session-accessor.sqlite-scope.js";
 
@@ -150,6 +151,22 @@ export function reclaimSqliteSessionInTransaction(
   plan: SqliteSessionReclamationPlan,
   callbacks: SqliteSessionReclamationCallbacks = {},
 ): SqliteSessionReclamationResult {
+  if (
+    plan.kind === "reclamation-pending" ||
+    ((plan.kind === "history-eviction" || plan.kind === "historical-generation") &&
+      plan.reclamation)
+  ) {
+    const result = reclaimResumableSessionInTransaction(plan, callbacks);
+    callbacks.afterCommit?.();
+    if (
+      result.kind === "history-eviction" &&
+      result.value.deleted &&
+      result.reclamationReceipt?.cursor === 3
+    ) {
+      reclaimSqliteFreePagesBestEffort(plan.databaseOptions);
+    }
+    return result;
+  }
   if (plan.kind === "maintenance-pages") {
     const database = openOpenClawAgentDatabase(plan.databaseOptions);
     return {
@@ -171,7 +188,10 @@ export function reclaimSqliteSessionInTransaction(
 }
 
 function reclaimSqliteRowsInTransaction(
-  plan: Exclude<SqliteSessionReclamationPlan, { kind: "maintenance-pages" }>,
+  plan: Exclude<
+    SqliteSessionReclamationPlan,
+    { kind: "maintenance-pages" | "reclamation-pending" }
+  >,
   callbacks: SqliteSessionReclamationCallbacks,
 ): SqliteSessionReclamationResult {
   if (plan.kind === "deletion-plan") {

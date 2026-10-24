@@ -105,7 +105,7 @@ export async function runSessionDeletionPlanning(
   return result.value;
 }
 
-export async function runSqliteSessionReclamation(params: {
+type RunReclamationParams = {
   diagnostics?: SqliteSessionReclamationDiagnostics;
   assertCommitAllowed?: () => void;
   refreshMaintenanceProtection?: () => SessionMaintenanceLiveProtection;
@@ -116,7 +116,34 @@ export async function runSqliteSessionReclamation(params: {
     databaseIdentity: string | symbol,
   ) => void;
   plan: SqliteSessionReclamationPlan;
-}): Promise<SqliteSessionReclamationResult> {
+};
+export async function runSqliteSessionReclamation(
+  params: RunReclamationParams,
+): Promise<SqliteSessionReclamationResult> {
+  const plan = params.plan;
+  if (
+    (plan.kind === "history-eviction" || plan.kind === "historical-generation") &&
+    !plan.reclamation &&
+    plan.materializedPlans.length === 1 &&
+    plan.materializedPlans[0]?.archive &&
+    plan.materializedPlans[0]?.snapshot.generation &&
+    !params.forceInProcess &&
+    supportsOpenClawAgentDatabaseExecution(plan.databaseOptions)
+  ) {
+    const { runPhasedSessionReclamation } =
+      await import("./session-accessor.sqlite-reclamation-phased.js");
+    params.assertCommitAllowed?.();
+    const { reclamationReceipt: _receipt, ...result } = await runPhasedSessionReclamation(
+      { ...params, plan },
+      runAtomicSqliteSessionReclamation,
+    );
+    return result;
+  }
+  return runAtomicSqliteSessionReclamation(params);
+}
+async function runAtomicSqliteSessionReclamation(
+  params: RunReclamationParams,
+): Promise<SqliteSessionReclamationResult> {
   if (params.diagnostics) {
     params.diagnostics.kind = params.plan.kind;
   }

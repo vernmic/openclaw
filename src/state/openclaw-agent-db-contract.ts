@@ -24,7 +24,8 @@ import type { OpenClawStateDatabaseOptions } from "./openclaw-state-db-contract.
 // v8 added per-transcript session provenance. v7 added per-entry lifecycle status projection.
 // v6 added session/transcript hot-path indexes.
 // v5 added transcript mutation watermarks.
-export const OPENCLAW_AGENT_SCHEMA_VERSION = 24;
+// v25 records native worker reclamation phase receipts for crash recovery.
+export const OPENCLAW_AGENT_SCHEMA_VERSION = 25;
 export const AGENT_STORAGE_SCHEMA_VERSION = 23;
 export const TRANSCRIPT_FTS_ROW_SCHEMA_VERSION = 22;
 export const AGENT_MEDIA_SCHEMA_VERSION = 17;

@@ -16,6 +16,7 @@ import {
   openOpenClawAgentDatabase,
   runOpenClawAgentWriteTransaction,
 } from "./openclaw-agent-db.js";
+import { withoutReclamationSchema } from "./openclaw-agent-reclamation-schema.js";
 import { OPENCLAW_AGENT_SCHEMA_SQL } from "./openclaw-agent-schema.js";
 import { withoutSessionEntrySnapshotsSchema } from "./openclaw-agent-session-snapshots-schema.js";
 
@@ -49,8 +50,8 @@ function largeEntry(index: number): SessionEntry {
   };
 }
 
-function seedV23(database: DatabaseSync, count: number) {
-  database.exec(withoutSessionEntrySnapshotsSchema(OPENCLAW_AGENT_SCHEMA_SQL));
+function seedV23(database: DatabaseSync, count: number, schema = OPENCLAW_AGENT_SCHEMA_SQL) {
+  database.exec(withoutSessionEntrySnapshotsSchema(withoutReclamationSchema(schema)));
   database.exec(`PRAGMA user_version = 23;
     INSERT INTO schema_meta(meta_key, role, schema_version, agent_id, app_version, created_at, updated_at)
     VALUES ('primary', 'agent', 23, 'main', '2026.9.4', 1, 1)`);
@@ -89,6 +90,35 @@ function snapshotRows(database: DatabaseSync) {
     .prepare("SELECT * FROM session_entry_snapshots ORDER BY session_key, field")
     .all();
 }
+
+it.each(["LF", "CRLF"])("migrates historical snapshots from %s schema input", async (format) => {
+  const schema = OPENCLAW_AGENT_SCHEMA_SQL.replace(/\r?\n/gu, format === "CRLF" ? "\r\n" : "\n");
+  await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+    const pathname = state.path("newline-v23.sqlite");
+    const database = new DatabaseSync(pathname);
+    try {
+      const entries = seedV23(database, 1, schema);
+      const beforeTranscript = transcriptRows(database);
+      expect(database.prepare("PRAGMA table_info(session_nodes)").all()).not.toEqual(
+        expect.arrayContaining([expect.objectContaining({ name: "snapshot_revision" })]),
+      );
+      await withAgentDatabaseMaintenanceLease({ env: state.env }, async () => {
+        ensureOpenClawAgentDatabaseSchema(database, {
+          agentId: "main",
+          path: pathname,
+          env: state.env,
+        });
+      });
+      expect(database.prepare("PRAGMA user_version").get()).toEqual({ user_version: 25 });
+      expect(transcriptRows(database)).toEqual(beforeTranscript);
+      expect(
+        readExactSessionEntryRow({ agentId: "main", db: database }, "agent:main:fixture-0")?.entry,
+      ).toEqual(entries.get("agent:main:fixture-0"));
+    } finally {
+      database.close();
+    }
+  });
+});
 
 it("migrates a copied large v23 store without losing snapshots or rewriting transcript bytes", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
@@ -145,9 +175,9 @@ it("migrates a copied large v23 store without losing snapshots or rewriting tran
           env: state.env,
         });
       });
-      expect(database.prepare("PRAGMA user_version").get()).toEqual({ user_version: 24 });
+      expect(database.prepare("PRAGMA user_version").get()).toEqual({ user_version: 25 });
       expect(database.prepare("SELECT schema_version FROM schema_meta").get()).toEqual({
-        schema_version: 24,
+        schema_version: 25,
       });
       expect(transcriptRows(database)).toEqual(beforeTranscript);
       const reader = { agentId: "main", db: database };
@@ -250,7 +280,7 @@ it("rolls back extracted snapshots and version markers when schema publication i
       };
       let reachedPublication = false;
       database.setAuthorizer((action, name, value) => {
-        if (action === constants.SQLITE_PRAGMA && name === "user_version" && value === "24") {
+        if (action === constants.SQLITE_PRAGMA && name === "user_version" && value === "25") {
           reachedPublication = true;
           return constants.SQLITE_DENY;
         }

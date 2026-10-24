@@ -30,6 +30,7 @@ import {
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 
 type SessionMigrationDeps = Parameters<typeof runSessionStartupMigration>[0]["deps"] & {
+  recoverSessionReclamations?: typeof import("./server-reclamation-orphan-sweep.js").recoverGatewaySessionReclamations;
   reconcileSessionTranscriptIndexes?: typeof import("../config/sessions/session-transcript-reconcile.js").reconcileSessionTranscriptIndexes;
 };
 
@@ -211,6 +212,17 @@ export async function runStartupSessionMigration(params: {
           `session: retained startup orphans because ownership could not be verified: ${String(error)}`,
         );
       }
+      const recover =
+        params.deps?.recoverSessionReclamations ??
+        (await import("./server-reclamation-orphan-sweep.js")).recoverGatewaySessionReclamations;
+      params.assertCurrent?.();
+      try {
+        await recover({ database, assertCurrent: params.assertCurrent, log: params.log });
+      } catch (error) {
+        params.assertCurrent?.();
+        params.log.warn(`session: retained startup reclamation debt: ${String(error)}`);
+      }
+      params.assertCurrent?.();
       reconcile ??= (await import("../config/sessions/session-transcript-reconcile.js"))
         .reconcileSessionTranscriptIndexes;
       params.assertCurrent?.();

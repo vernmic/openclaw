@@ -1,4 +1,6 @@
 import type { WorkerOptions } from "node:worker_threads";
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { resolveSqliteFilesystemPath } from "../../infra/node-sqlite.js";
 
 const integrityCounterPreload = `
   import { DatabaseSync } from "node:sqlite";
@@ -11,7 +13,9 @@ const integrityCounterPreload = `
   const prepare = DatabaseSync.prototype.prepare;
   DatabaseSync.prototype.prepare = function(sql) {
     const statement = prepare.call(this, sql);
-    if (this.location() === databasePath &&
+    // Native Windows opens preserve the SQLite namespace; direct fixture opens need not.
+    if ((this.location() === databasePath ||
+         this.location() === workerData.integrityDatabaseLocation) &&
         (/^PRAGMA integrity_check;?$/i.test(sql.trim()) ||
          sql.trim() === "PRAGMA integrity_check('sqlite_schema');")) {
       for (const method of ["all", "get", "iterate", "run"]) {
@@ -51,6 +55,18 @@ export function withWorkerSqliteIntegrityCounter(
   databasePath?: string,
   firstCheck?: SharedArrayBuffer,
 ): WorkerOptions | undefined {
+  const data: unknown = options?.workerData;
+  const boot = isRecord(data) ? data : undefined;
+  const plan = isRecord(boot?.plan) ? boot.plan : undefined;
+  const target =
+    databasePath ??
+    (boot?.operation === "reclaim" && isRecord(boot.databaseOptions)
+      ? boot.databaseOptions.path
+      : isRecord(plan?.databaseOptions)
+        ? plan.databaseOptions.path
+        : undefined);
+  const integrityDatabaseLocation =
+    typeof target === "string" ? resolveSqliteFilesystemPath(target) : undefined;
   return counts
     ? {
         ...options,
@@ -62,6 +78,7 @@ export function withWorkerSqliteIntegrityCounter(
         workerData: {
           ...options?.workerData,
           integrityChecks: counts,
+          integrityDatabaseLocation,
           ...(databasePath ? { integrityDatabasePath: databasePath } : {}),
           ...(release ? { integrityRelease: release } : {}),
           ...(firstCheck ? { integrityFirstCheck: firstCheck } : {}),

@@ -1030,3 +1030,26 @@ CREATE TABLE IF NOT EXISTS session_input_completions (
   FOREIGN KEY (session_key) REFERENCES session_nodes(session_key) ON DELETE CASCADE,
   FOREIGN KEY (session_id) REFERENCES session_windows(session_id) ON DELETE CASCADE
 ) STRICT;
+
+-- Recovery receipts belong to the native agent writer, independent of deleted windows.
+CREATE TABLE IF NOT EXISTS session_reclamation_jobs (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  generation TEXT NOT NULL,
+  source_path TEXT NOT NULL,
+  source_identity TEXT NOT NULL,
+  source_birthtime TEXT,
+  archive_directory TEXT NOT NULL,
+  expected_archive_sha256 TEXT NOT NULL,
+  owner_id TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('pending', 'done', 'declined', 'failed')),
+  step_cursor INTEGER NOT NULL CHECK (step_cursor BETWEEN 1 AND 4),
+  plan_json TEXT NOT NULL,
+  last_error TEXT,
+  updated_at INTEGER NOT NULL
+) STRICT;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_session_reclamation_live
+  ON session_reclamation_jobs(session_id, generation) WHERE state = 'pending';
+CREATE INDEX IF NOT EXISTS idx_session_reclamation_pending
+  ON session_reclamation_jobs(state, updated_at, id);
+-- End resumable reclamation schema.

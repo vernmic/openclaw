@@ -5,6 +5,7 @@ import {
 } from "../../infra/kysely-sync.js";
 import type { DB as OpenClawAgentKyselyDatabase } from "../../state/openclaw-agent-db.generated.js";
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
+import { archiveHeldByReclamation } from "../../state/openclaw-agent-reclamation-queue.js";
 import {
   ensureSessionTranscriptArchiveSchema,
   SESSION_TRANSCRIPT_ARCHIVES_TABLE,
@@ -17,7 +18,10 @@ import type {
   TranscriptArchivePublishResult,
 } from "./session-accessor.sqlite-archive-types.js";
 
-type TranscriptArchiveDatabase = Pick<OpenClawAgentKyselyDatabase, "session_transcript_archives">;
+type TranscriptArchiveDatabase = Pick<
+  OpenClawAgentKyselyDatabase,
+  "session_transcript_archives" | "session_reclamation_jobs"
+>;
 
 const PENDING_ARCHIVE_PUBLISH_BATCH_SIZE = 4;
 
@@ -108,12 +112,35 @@ export function prepareSessionTranscriptArchivePublishPlans(
       .selectFrom("session_transcript_archives")
       .select(["archive_name", "created_at", "encoding", "generation", "reason", "session_id"])
       .where("published_at", "is", null)
+      .where((eb) =>
+        eb.not(
+          eb.exists(
+            eb
+              .selectFrom("session_reclamation_jobs")
+              .select("id")
+              .whereRef(
+                "session_reclamation_jobs.session_id",
+                "=",
+                "session_transcript_archives.session_id",
+              )
+              .whereRef(
+                "session_reclamation_jobs.generation",
+                "=",
+                "session_transcript_archives.generation",
+              )
+              .where("state", "=", "pending"),
+          ),
+        ),
+      )
       .orderBy("created_at", "asc")
       .orderBy("session_id", "asc")
       .orderBy("generation", "asc")
       .limit(PENDING_ARCHIVE_PUBLISH_BATCH_SIZE),
   ).rows;
-  for (const archive of pendingArchives) {
+  const publishable = pendingArchives.filter(
+    (archive) => !archiveHeldByReclamation(database, archive.session_id, archive.generation),
+  );
+  for (const archive of publishable) {
     if (
       (archive.encoding !== "identity" && archive.encoding !== "zstd") ||
       (archive.reason !== "deleted" && archive.reason !== "reset")
@@ -144,18 +171,20 @@ export function prepareSessionTranscriptArchivePublishPlans(
   }
   const archives = uniqueTranscriptArchives([
     ...params.requested,
-    ...pendingArchives.map((archive) => ({
+    ...publishable.map((archive) => ({
       generation: archive.generation,
       sessionId: archive.session_id,
     })),
   ]);
-  return archives.map((archive) => ({
-    agentId: database.agentId,
-    archiveDirectory: params.archiveDirectory,
-    databasePath: database.path,
-    generation: archive.generation,
-    sessionId: archive.sessionId,
-  }));
+  return archives
+    .filter((archive) => !archiveHeldByReclamation(database, archive.sessionId, archive.generation))
+    .map((archive) => ({
+      agentId: database.agentId,
+      archiveDirectory: params.archiveDirectory,
+      databasePath: database.path,
+      generation: archive.generation,
+      sessionId: archive.sessionId,
+    }));
 }
 
 // The caller owns write admission and the transaction for this result batch.

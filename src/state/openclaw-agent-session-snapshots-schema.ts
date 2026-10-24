@@ -15,6 +15,6 @@ export function withoutSessionEntrySnapshotsSchema(schema: string): string {
     return schema;
   }
   return schema
-    .replace("  snapshot_revision INTEGER NOT NULL DEFAULT 0,\n", "")
+    .replace(/ {2}snapshot_revision INTEGER NOT NULL DEFAULT 0,\r?\n/u, "")
     .replace(sessionEntrySnapshotsSchemaSql(schema), "");
 }

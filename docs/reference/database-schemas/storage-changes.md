@@ -2302,3 +2302,48 @@ without `preflight-agent` remain unsupported; installing a newer CLI elsewhere
 does not make those payloads compatible. Runtime/package identity and serving
 health are separate checks from database compatibility. A successful read-only
 preflight does not authorize checkpoint replay or replacement of live databases.
+
+### Native resumable reclamation (fork acceptance, 2026-10-22)
+
+Vern accepted resumable reclamation on the native worker on 2026-10-22 in the
+upgrade G4 decision record. Agent schema 25 adds required `session_reclamation_jobs`;
+shared-state schema remains 20. Admission migrates an exact v24 schema forward and
+preserves transcript bytes, generations, cold archives, integrity checks and native
+writer ownership. Earlier supported migrations converge through their existing
+owners before installing the new table. Runtime does not create the ledger lazily.
+
+Only archived history eviction and historical-generation reclamation use durable
+guard, archive append, delete and complete boundaries. Entry/lifecycle-artifact
+removal and empty/no-archive history retain native atomic transactions. Each phase
+commits its receipt with its effects through native worker writer/commit admission.
+The immutable session generation selects canonical archive identity. The guard
+receipt records the archive SHA; integrity mismatch fails terminally before delete.
+Each later destructive phase compares the current exact snapshot, references and
+fresh prepared maintenance/subagent protection. Takeover compares the exact saved
+owner, rather than treating age or an expired heartbeat as live authority.
+
+Ledger plans contain comparison facts without database locators, environment,
+callbacks, live capabilities or archive byte buffers. Source physical identity,
+birthtime, source path and instance archive directory are separately bound to the
+receipt. Startup uses current configured existing stores; a copied source/root
+mismatch declines visibly before materialization and requires reconciliation.
+Corrupt plans fail without deleting transcript rows. Recovery resumes each committed
+cursor, derives bytes only when archive append has not committed, and otherwise
+verifies the canonical bytes against the saved guard SHA. Native window deletion
+still cascades rewrite watermarks, so completion never creates a ghost generation.
+
+Unfinished jobs retain their canonical recovery blobs through completion. Native
+publication and retention skip held identities before bounded selection and check
+custody again before row deletion. A pre-delete decline preserves safe canonical
+history; existing archive publication/recovery and cold-archive retention remain
+authoritative. Terminal receipts are retained as append-only recovery history, as
+in the accepted fork family; this adds small plan/receipt rows per attempted job.
+
+Upgrade remains an explicit migration under the existing database owner. Older
+readers refuse agent schema 25. Rollback requires restoring the complete pre-upgrade
+backup with the matching runtime, after stopping the candidate; deleting the ledger
+or lowering version markers is not a rollback. No live-state migration, runtime
+restart or production swap is authorized by this source change. The existing
+15-second busy timeout remains: smaller phase boundaries remove the old long
+reclamation hold, but isolated correctness tests alone do not establish a safe
+replacement timeout for external writers and migration workloads.

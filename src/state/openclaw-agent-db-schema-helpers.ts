@@ -48,6 +48,7 @@ import {
   ensureOpenClawAgentProgressCardSchemaInTransaction,
   AGENT_PROGRESS_CARD_SCHEMA_SQL,
 } from "./openclaw-agent-progress-card-schema.js";
+import { withoutReclamationSchema } from "./openclaw-agent-reclamation-schema.js";
 import { OPENCLAW_AGENT_SCHEMA_SQL } from "./openclaw-agent-schema.js";
 import {
   AGENT_V14_ADDITIVE_SCHEMA_SQL,
@@ -70,10 +71,14 @@ export {
 
 /** Compare historical migration targets against only the representation they support. */
 export function getOpenClawAgentMigrationSchema(targetVersion: number): string {
+  const reclamationSchema =
+    targetVersion < 25
+      ? withoutReclamationSchema(OPENCLAW_AGENT_SCHEMA_SQL)
+      : OPENCLAW_AGENT_SCHEMA_SQL;
   const sessionSchemaSql =
     targetVersion < SESSION_ENTRY_SNAPSHOTS_SCHEMA_VERSION
-      ? withoutSessionEntrySnapshotsSchema(OPENCLAW_AGENT_SCHEMA_SQL)
-      : OPENCLAW_AGENT_SCHEMA_SQL;
+      ? withoutSessionEntrySnapshotsSchema(reclamationSchema)
+      : reclamationSchema;
   const targetSchemaSql =
     targetVersion < AGENT_STORAGE_SCHEMA_VERSION
       ? withLegacyAgentStorageSchema(sessionSchemaSql, targetVersion)

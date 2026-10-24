@@ -80,6 +80,10 @@ import {
   migrateSessionParticipantsSchema,
   withLegacySessionParticipantsSchema,
 } from "./openclaw-agent-participants-migration.js";
+import {
+  reclamationSchemaSql,
+  withoutReclamationSchema,
+} from "./openclaw-agent-reclamation-schema.js";
 import { OPENCLAW_AGENT_SCHEMA_SQL } from "./openclaw-agent-schema.js";
 import { migrateSessionEntrySnapshotsInTransaction } from "./openclaw-agent-session-snapshots-migration.js";
 import {
@@ -324,6 +328,28 @@ function ensureAgentSchema(
       if (previousVersion < targetVersion) {
         assertSupportedAgentMigrationSchemas(db, pathname, previousVersion);
       }
+      if (previousVersion === 24 && targetVersion >= 25) {
+        const previousSchema = withoutReclamationSchema(schemaSql);
+        repairCanonicalSqliteIndexes(db, pathname, previousSchema, {
+          verifyPhysicalIntegrity: false,
+        });
+        assertAgentSchemaVersion(
+          db,
+          { agentId, pathname, version: previousVersion },
+          previousSchema,
+        );
+        db.exec(reclamationSchemaSql(schemaSql));
+        finishAgentSchemaMigration(
+          db,
+          agentId,
+          pathname,
+          targetVersion,
+          schemaSql,
+          identityMigration,
+          assertMigration,
+        );
+        return;
+      }
       const isEmptyDatabase =
         previousVersion === 0 &&
         readExistingAgentSchemaMeta(db) === null &&
@@ -336,9 +362,13 @@ function ensureAgentSchema(
         !isEmptyDatabase &&
         previousVersion < SESSION_ENTRY_SNAPSHOTS_SCHEMA_VERSION &&
         targetVersion >= SESSION_ENTRY_SNAPSHOTS_SCHEMA_VERSION;
+      const versionedSchemaSql =
+        previousVersion < 25 && targetVersion >= 25
+          ? withoutReclamationSchema(schemaSql)
+          : schemaSql;
       const storageSchemaSql = requiresSnapshotMigration
-        ? withoutSessionEntrySnapshotsSchema(schemaSql)
-        : schemaSql;
+        ? withoutSessionEntrySnapshotsSchema(versionedSchemaSql)
+        : versionedSchemaSql;
       const migrationSchemaSql = requiresStorageMigration
         ? withLegacyAgentStorageSchema(storageSchemaSql, previousVersion)
         : storageSchemaSql;
@@ -380,6 +410,9 @@ function ensureAgentSchema(
         }
         if (requiresSnapshotMigration) {
           migrateSessionEntrySnapshotsInTransaction(db);
+        }
+        if (targetVersion >= 25) {
+          db.exec(reclamationSchemaSql(schemaSql));
         }
         finishAgentSchemaMigration(
           db,
@@ -470,6 +503,9 @@ function ensureAgentSchema(
       }
       if (requiresSnapshotMigration) {
         migrateSessionEntrySnapshotsInTransaction(db);
+      }
+      if (targetVersion >= 25) {
+        db.exec(reclamationSchemaSql(schemaSql));
       }
       finishAgentSchemaMigration(
         db,
