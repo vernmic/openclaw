@@ -31,9 +31,9 @@ export type PluginHookAgentContext = PluginHookContextWindow & {
   sessionKey?: string;
   sessionId?: string;
   /**
-   * agent_end only (fork, 2026-10-25): this run's admitted turn, when a durable context engine
-   * owes it a verdict - commitTurn with this advancement key, or discardTurn. The id is the
-   * turn's identity, not a prediction of the verdict.
+   * agent_end only (fork, 2026-10-25): this run's admitted turn when it belongs to a durable
+   * context engine - an attempt that engine can commit, with commitTurn's advancement key. Absent
+   * for errored, aborted or yielded attempts, degraded runs and engines without durable turns.
    */
   contextEngineTurn?: { logicalTurnId: string; enginePluginId?: string };
   /** Host-resolved memory partition for this turn. */

@@ -206,8 +206,10 @@ export async function completeEmbeddedAttemptAfterTurn(
   const { lastCallUsage, promptCache, compactionOccurredThisAttempt } = settled;
   const { beforeAgentFinalizeRevisionReason } = prompt;
 
-  // Fork (2026-10-25): this run's admitted turn, when a durable engine owes it a verdict
-  // (commitTurn or discardTurn). agent_end carries the identity, not a prediction.
+  // Fork (2026-10-25): this run's admitted turn, when it belongs to a durable engine - an
+  // attempt the engine can commit. agent_end carries the identity, not a prediction: an engine
+  // plugin's retain path leaves such a turn to commitTurn, and the host discards one only when
+  // the run never reaches an accepted end.
   let contextEngineTurn: { logicalTurnId: string; enginePluginId?: string } | undefined;
   // Context-engine hooks may call runtime LLM capabilities. Only the transcript
   // rewrite callback reacquires the synchronous session write boundary.
@@ -291,11 +293,16 @@ export async function completeEmbeddedAttemptAfterTurn(
             tokenBudget: attempt.contextTokenBudget,
           },
         });
+        // An errored, aborted or yielded attempt is always discarded (finalizeAccepted), so it
+        // is not named: a sessions_yield handoff keeps its prompt on the plugin's own path.
         if (
           lease &&
           !lease.degraded &&
           lease.engine.info.transcriptSemantics?.turnAdvancementIdempotency !== undefined &&
-          supportsContextEngineDurableTurnAdvancement(lease.engine)
+          supportsContextEngineDurableTurnAdvancement(lease.engine) &&
+          !promptError &&
+          !lifecycleState.aborted &&
+          !yieldAborted
         ) {
           contextEngineTurn = {
             logicalTurnId: admission.logicalTurnId,

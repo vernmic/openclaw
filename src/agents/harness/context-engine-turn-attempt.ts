@@ -158,20 +158,6 @@ export async function discardContextEngineTurnAttemptIntent(params: {
     warn(
       `[context-engine] failed to discard unaccepted turn intent: ${error instanceof Error ? error.message : String(error)}`,
     );
-    return;
-  }
-  // Fork (2026-10-25): tell the engine its verdict, the counterpart of commitTurn.
-  const { admission } = params.facts.boundary;
-  try {
-    await params.lease.engine.discardTurn?.({
-      logicalTurnId: admission.logicalTurnId,
-      sessionId: admission.sessionId,
-      sessionKey: admission.sessionKey,
-    });
-  } catch (error) {
-    warn(
-      `[context-engine] engine discardTurn failed: ${error instanceof Error ? error.message : String(error)}`,
-    );
   }
 }
 
