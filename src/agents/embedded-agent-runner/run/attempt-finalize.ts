@@ -206,6 +206,9 @@ export async function completeEmbeddedAttemptAfterTurn(
   const { lastCallUsage, promptCache, compactionOccurredThisAttempt } = settled;
   const { beforeAgentFinalizeRevisionReason } = prompt;
 
+  // Fork (2026-10-25): this run's admitted turn, when a durable engine owes it a verdict
+  // (commitTurn or discardTurn). agent_end carries the identity, not a prediction.
+  let contextEngineTurn: { logicalTurnId: string; enginePluginId?: string } | undefined;
   // Context-engine hooks may call runtime LLM capabilities. Only the transcript
   // rewrite callback reacquires the synchronous session write boundary.
   if (activeContextEngine && !beforeAgentFinalizeRevisionReason) {
@@ -288,6 +291,19 @@ export async function completeEmbeddedAttemptAfterTurn(
             tokenBudget: attempt.contextTokenBudget,
           },
         });
+        if (
+          lease &&
+          !lease.degraded &&
+          lease.engine.info.transcriptSemantics?.turnAdvancementIdempotency !== undefined &&
+          supportsContextEngineDurableTurnAdvancement(lease.engine)
+        ) {
+          contextEngineTurn = {
+            logicalTurnId: admission.logicalTurnId,
+            ...(lease.effectiveEnginePluginId
+              ? { enginePluginId: lease.effectiveEnginePluginId }
+              : {}),
+          };
+        }
       }
     } else {
       const afterTurnRuntimeContext = buildAfterTurnRuntimeContextFromUsage({
@@ -421,14 +437,17 @@ export async function completeEmbeddedAttemptAfterTurn(
             await readAttemptNestedToolActivity(sessionManager, nestedToolActivityState),
           ),
       ),
-      ctx: buildEmbeddedAgentEndContext({
-        run: attempt,
-        agentId: sessionAgentId,
-        agentDir,
-        trace: freezeDiagnosticTraceContext(diagnosticTrace),
-        skillWorkshopAvailable,
-        compacted: compactionOccurredThisAttempt,
-      }),
+      ctx: {
+        ...buildEmbeddedAgentEndContext({
+          run: attempt,
+          agentId: sessionAgentId,
+          agentDir,
+          trace: freezeDiagnosticTraceContext(diagnosticTrace),
+          skillWorkshopAvailable,
+          compacted: compactionOccurredThisAttempt,
+        }),
+        ...(contextEngineTurn ? { contextEngineTurn } : {}),
+      },
       hookRunner,
     });
   }

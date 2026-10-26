@@ -454,6 +454,18 @@ export interface ContextEngine {
   }): Promise<{ status: "committed" | "duplicate" }>;
 
   /**
+   * Fork (2026-10-25): the host discarded an admitted turn this engine will never commit
+   * (unaccepted attempt or run). The verdict counterpart of commitTurn, so an engine that
+   * holds work for a turn until its verdict is told either way. Best-effort; hosts ignore
+   * failures.
+   */
+  discardTurn?(params: {
+    logicalTurnId: string;
+    sessionId: string;
+    sessionKey?: string;
+  }): Promise<void> | void;
+
+  /**
    * Assemble model context under a token budget.
    * Returns an ordered set of messages ready for the model.
    */

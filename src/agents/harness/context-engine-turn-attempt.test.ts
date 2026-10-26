@@ -856,3 +856,49 @@ describe("accepted context-engine turn finalization", () => {
     },
   );
 });
+
+// Fork (2026-10-25): discardTurn is the verdict counterpart of commitTurn, so an engine that
+// holds work for a turn until its verdict is told either way.
+describe("context-engine turn discard verdict", () => {
+  it("tells the engine an unaccepted turn's identity and never commits it", async () => {
+    const fixture = await createAcceptedTurnFixture({
+      sessionId: "discard-verdict",
+      logicalTurnId: "discarded-turn",
+    });
+    const { commitTurn, lease } = createDurableLease();
+    const discardTurn = vi.fn<NonNullable<ContextEngine["discardTurn"]>>(async () => undefined);
+    lease.engine.discardTurn = discardTurn;
+    await finalizeAcceptedContextEngineTurn({
+      facts: { ...fixture.facts, promptError: true },
+      lease,
+      warn: () => undefined,
+    });
+    expect(commitTurn).not.toHaveBeenCalled();
+    expect(discardTurn).toHaveBeenCalledTimes(1);
+    expect(discardTurn).toHaveBeenCalledWith({
+      logicalTurnId: "discarded-turn",
+      sessionId: fixture.target.sessionId,
+      sessionKey: fixture.target.sessionKey,
+    });
+  });
+
+  it("only warns when the engine's discardTurn fails", async () => {
+    const fixture = await createAcceptedTurnFixture({
+      sessionId: "discard-verdict-failure",
+      logicalTurnId: "discarded-turn-failure",
+    });
+    const { lease } = createDurableLease();
+    lease.engine.discardTurn = async () => {
+      throw new Error("engine unavailable");
+    };
+    const warnings: string[] = [];
+    await expect(
+      finalizeAcceptedContextEngineTurn({
+        facts: { ...fixture.facts, aborted: true },
+        lease,
+        warn: (message) => warnings.push(message),
+      }),
+    ).resolves.toBeUndefined();
+    expect(warnings.some((message) => message.includes("engine discardTurn failed"))).toBe(true);
+  });
+});

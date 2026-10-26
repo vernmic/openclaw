@@ -11,6 +11,7 @@ import { getSpawnBroker } from "../process/spawn-broker/context.js";
 import { runInDetachedAsyncContext } from "../shared/async-work-scope.js";
 import { hasErrnoCode } from "./errno.js";
 import { resolveNodeCompileCacheEnv } from "./node-compile-cache-env.js";
+import { mergeProcessEnv, resolveDiagnosticProcessEnv } from "./process-env.js";
 import {
   runtimeProcessEntrypoints,
   SQLITE_READONLY_CHILD_ARG,
@@ -258,11 +259,16 @@ export function captureSqliteReadOnlyWorkerLaunch(
     runtimeGeneration: captureRuntimeWorkerSource(
       resolveRuntimeWorkerUrl(runtimeProcessEntrypoints.sqliteReadOnly),
     ).runtimeGeneration,
-    env: {
-      ...resolveNodeCompileCacheEnv(env),
+    // The supplied env may be a storage-only record (state routing, no platform facts). Fork
+    // (2026-10-25): bootstrap the child from this process's platform/account/temp keys first -
+    // without them os.tmpdir() resolved to "<cwd>\undefined\temp" - then the supplied env, then
+    // the routing it pins, so captured database routing stays authoritative.
+    env: mergeProcessEnv([
+      resolveDiagnosticProcessEnv(),
+      resolveNodeCompileCacheEnv(env),
       // Auth readers pin this default explicitly; equivalent roots share one child.
-      OPENCLAW_STATE_DIR: resolveStateDir(env),
-    },
+      { OPENCLAW_STATE_DIR: resolveStateDir(env) },
+    ]),
     cwd: tryProcessCwd() ?? tmpdir(),
     transport: broker ? { kind: "broker", owner: broker } : { kind: "native" },
   };

@@ -36,6 +36,7 @@ export function buildAgentHookContext(params: AgentHarnessHookContext): PluginHo
     ...(params.agentId ? { agentId: params.agentId } : {}),
     ...(params.sessionKey ? { sessionKey: params.sessionKey } : {}),
     ...(params.sessionId ? { sessionId: params.sessionId } : {}),
+    ...(params.contextEngineTurn ? { contextEngineTurn: params.contextEngineTurn } : {}),
     // The host derives the audience guard from the audience, so hooks never receive one without it.
     ...(memoryAudience
       ? {

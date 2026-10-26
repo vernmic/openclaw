@@ -30,6 +30,12 @@ export type PluginHookAgentContext = PluginHookContextWindow & {
   agentId?: string;
   sessionKey?: string;
   sessionId?: string;
+  /**
+   * agent_end only (fork, 2026-10-25): this run's admitted turn, when a durable context engine
+   * owes it a verdict - commitTurn with this advancement key, or discardTurn. The id is the
+   * turn's identity, not a prediction of the verdict.
+   */
+  contextEngineTurn?: { logicalTurnId: string; enginePluginId?: string };
   /** Host-resolved memory partition for this turn. */
   memoryAudience?: MemoryAudience;
   /** Rejects the audience after any captured session incarnation changes. */
