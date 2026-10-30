@@ -34,6 +34,9 @@ export const OPENCLAW_EMBEDDED_CONTEXT_ENGINE_HOST = {
     "bootstrap",
     "assemble-before-prompt",
     "after-turn",
+    // This runner names engine-owned attempts before firing agent_end, so plugins
+    // can leave durable capture to commitTurn without losing unowned fallbacks.
+    "agent-end-context-engine-turn-v1",
     "maintain",
     "compact",
     "runtime-llm-complete",

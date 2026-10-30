@@ -66,6 +66,8 @@ export type ContextEngineHostCapability =
   | "bootstrap"
   | "assemble-before-prompt"
   | "after-turn"
+  /** agent_end identifies eligible engine-owned attempts with contextEngineTurn. */
+  | "agent-end-context-engine-turn-v1"
   | "maintain"
   | "compact"
   | "runtime-llm-complete"

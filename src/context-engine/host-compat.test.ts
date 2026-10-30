@@ -90,4 +90,35 @@ describe("context engine host compatibility", () => {
       host: CODEX_APP_SERVER_CONTEXT_ENGINE_HOST,
     });
   });
+
+  it("admits engine-owned hook capture only on the runner that provides it", () => {
+    const engine = createEngine(["agent-end-context-engine-turn-v1"]);
+
+    expect(() =>
+      assertContextEngineHostSupport({
+        contextEngine: engine,
+        operation: "agent-run",
+        host: OPENCLAW_EMBEDDED_CONTEXT_ENGINE_HOST,
+      }),
+    ).not.toThrow();
+
+    for (const host of [
+      CODEX_APP_SERVER_CONTEXT_ENGINE_HOST,
+      buildGenericCliContextEngineHostSupport({ backendId: "test-cli" }),
+      {
+        ...OPENCLAW_EMBEDDED_CONTEXT_ENGINE_HOST,
+        capabilities: OPENCLAW_EMBEDDED_CONTEXT_ENGINE_HOST.capabilities.filter(
+          (capability) => capability !== "agent-end-context-engine-turn-v1",
+        ),
+      },
+    ]) {
+      expect(() =>
+        assertContextEngineHostSupport({
+          contextEngine: engine,
+          operation: "agent-run",
+          host,
+        }),
+      ).toThrow("Missing host capabilities: agent-end-context-engine-turn-v1.");
+    }
+  });
 });

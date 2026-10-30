@@ -402,6 +402,17 @@ Native Codex and OpenClaw embedded agent runs satisfy `assemble-before-prompt`.
 Generic CLI backends do not, so engines that require it are rejected before the
 CLI process starts.
 
+Engines that coordinate durable turn capture with an `agent_end` hook can require
+`agent-end-context-engine-turn-v1` for `agent-run`. The OpenClaw embedded runner
+provides this capability: eligible engine-owned attempts carry
+`ctx.contextEngineTurn.logicalTurnId` and, for plugin-owned engines,
+`ctx.contextEngineTurn.enginePluginId`. The hook can leave capture of those
+attempts to the engine's durable `commitTurn` path while preserving its fallback
+for unowned attempts. The identity assigns capture responsibility; it does not
+claim that retention has completed. Native Codex and generic CLI hosts do not
+advertise this handoff. It is separate from `ownsCompaction` and does not require
+another capability-negotiation API.
+
 ### Failure isolation
 
 OpenClaw isolates the selected plugin engine from the core reply path. If a
