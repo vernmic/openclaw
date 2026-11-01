@@ -389,6 +389,13 @@ export function resolveContextEngineOwnerPluginId(
   return owner ? pluginIdFromContextEngineOwner(owner) : undefined;
 }
 
+/** Return the id a resolved context engine was registered under: the outbox `engine_id`. */
+export function resolveContextEngineRegisteredId(
+  engine: ContextEngine | undefined | null,
+): string | undefined {
+  return engine ? resolvedEngineMetadata.get(engine)?.engineId : undefined;
+}
+
 export const hasSameContextEngineInstance = (left: ContextEngine, right: ContextEngine): boolean =>
   (resolvedEngineMetadata.get(left)?.sourceEngine ?? left) ===
   (resolvedEngineMetadata.get(right)?.sourceEngine ?? right);

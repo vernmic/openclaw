@@ -6,6 +6,7 @@ import {
   OPENCLAW_EMBEDDED_CONTEXT_ENGINE_HOST,
   supportsContextEngineDurableTurnAdvancement,
 } from "../../../context-engine/host-compat.js";
+import { resolveContextEngineRegisteredId } from "../../../context-engine/registry.js";
 import { createAbortError } from "../../../infra/abort-signal.js";
 import { freezeDiagnosticTraceContext } from "../../../infra/diagnostic-trace-context.js";
 import { formatErrorMessage } from "../../../infra/errors.js";
@@ -250,12 +251,14 @@ export async function completeEmbeddedAttemptAfterTurn(
               return selected;
             })()
           : undefined);
-      const lease = attempt.contextEngineLogicalTurnLease;
+      // The attempt never carries the logical-turn lease (selection strips it before dispatch),
+      // so the outbox row's engine and owner ids come from the active engine itself.
+      const engineId = resolveContextEngineRegisteredId(activeContextEngine);
       if (
         admission &&
         !terminal &&
-        lease &&
-        supportsContextEngineDurableTurnAdvancement(lease.engine)
+        engineId &&
+        supportsContextEngineDurableTurnAdvancement(activeContextEngine)
       ) {
         log.warn(
           `[context-engine] skipped turn advancement facts: turn=${admission.logicalTurnId} session=${admission.sessionId}: ${terminalEntryId ? "terminal anchor unresolved" : "no transcript leaf id"}`,
@@ -266,8 +269,8 @@ export async function completeEmbeddedAttemptAfterTurn(
             path: admission.storePath,
           }).discardIntent({
             admission,
-            engineId: lease.effectiveEngineId,
-            ownerPluginId: lease.effectiveEnginePluginId,
+            engineId,
+            ownerPluginId: resolveActiveContextEnginePluginId(),
             onlyAdmitted: true,
           });
         } catch (error) {
@@ -296,19 +299,16 @@ export async function completeEmbeddedAttemptAfterTurn(
         // An errored, aborted or yielded attempt is always discarded (finalizeAccepted), so it
         // is not named: a sessions_yield handoff keeps its prompt on the plugin's own path.
         if (
-          lease &&
-          !lease.degraded &&
-          lease.engine.info.transcriptSemantics?.turnAdvancementIdempotency !== undefined &&
-          supportsContextEngineDurableTurnAdvancement(lease.engine) &&
+          activeContextEngine.info.transcriptSemantics?.turnAdvancementIdempotency !== undefined &&
+          supportsContextEngineDurableTurnAdvancement(activeContextEngine) &&
           !promptError &&
           !lifecycleState.aborted &&
           !yieldAborted
         ) {
+          const enginePluginId = resolveActiveContextEnginePluginId();
           contextEngineTurn = {
             logicalTurnId: admission.logicalTurnId,
-            ...(lease.effectiveEnginePluginId
-              ? { enginePluginId: lease.effectiveEnginePluginId }
-              : {}),
+            ...(enginePluginId ? { enginePluginId } : {}),
           };
         }
       }
