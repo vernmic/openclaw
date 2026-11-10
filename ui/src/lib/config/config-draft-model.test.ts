@@ -4,7 +4,7 @@ import { createDeferred as deferred } from "../../../../test/helpers/promise.js"
 import { GatewayRequestError } from "../../api/gateway-connect-errors.ts";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import * as json5Runtime from "../json5-runtime.ts";
-import { configRawForDisplay } from "./config-draft-model.ts";
+import { configRawForDisplay, stageDefaultAgentConfigEntry } from "./config-draft-model.ts";
 import { configSnapshot } from "./config-snapshot.test-support.ts";
 import {
   CONFIG_FORM_AUTO_SAVE_DEBOUNCE_MS,
@@ -825,5 +825,28 @@ describe("config draft model", () => {
     expect(runtimeConfig.state.configAutoSaveStatus).toBe("error");
     expect(runtimeConfig.state.lastError).toContain("Raw editor");
     runtimeConfig.dispose();
+  });
+});
+
+describe("stageDefaultAgentConfigEntry", () => {
+  it("clears stale legacy default markers when staging an explicit ownership default", () => {
+    const state = {
+      configForm: {
+        agents: {
+          ownership: "explicit",
+          defaults: { systemAgent: { agentId: "MAIN" } },
+          entries: { MAIN: { default: true }, reviewer: { default: true } },
+        },
+      },
+    } as never;
+    expect(stageDefaultAgentConfigEntry(state, "reviewer")).toBe(true);
+    const agents = (state as { configForm: { agents: Record<string, unknown> } }).configForm
+      .agents as {
+      entries: Record<string, Record<string, unknown>>;
+      defaults: { systemAgent: { agentId: string } };
+    };
+    expect(agents.entries.MAIN).not.toHaveProperty("default");
+    expect(agents.entries.reviewer).not.toHaveProperty("default");
+    expect(agents.defaults.systemAgent.agentId).toBe("reviewer");
   });
 });
