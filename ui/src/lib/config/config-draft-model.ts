@@ -676,6 +676,17 @@ export function stageDefaultAgentConfigEntry(state: RuntimeConfigState, agentId:
     if (Object.keys(entries).length > 1) {
       setPathValue(draft, ["agents", "ownership"], "explicit");
     }
+    // Explicit ownership retires the legacy `default: true` marker, and the schema
+    // refuses a roster carrying both. Restating the owner must clear all stale markers.
+    const current = asConfigRecord(draft.agents);
+    if (current?.ownership === "explicit") {
+      for (const entry of Object.values(asConfigRecord(current.entries) ?? {})) {
+        const record = asConfigRecord(entry);
+        if (record) {
+          delete record.default;
+        }
+      }
+    }
     setPathValue(draft, ["agents", "defaults", "systemAgent", "agentId"], authoredAgentId);
   });
   return true;
