@@ -69,6 +69,9 @@ const RUNTIME_COORDINATION_ERROR_NAMES = new Set([
   "SessionEntryChangedDuringReadError",
   "SessionTranscriptReadFenceError",
   "SqliteWorkerError",
+  // A rebuilding transcript projection is session state, not a model verdict; every
+  // candidate fails identically while it rebuilds.
+  "SessionTranscriptProjectionUnavailableError",
   "SessionCapabilityMetadataChangedError",
 ]);
 
