@@ -1,0 +1,39 @@
+{
+ "base": "179529ec9dd",
+ "keyed_by": "subject+patch-id",
+ "commits": [
+  {
+   "key": "fix(agents): classify a rebuilding transcript projection as coordination",
+   "patch_id": "0ce26f389ecb5348ba750f8b18d9bbaaf9e642f6",
+   "files": [
+    "src/agents/failover-error.test.ts",
+    "src/agents/failover-error.ts"
+   ],
+   "tests": [
+    "src/agents/failover-error.test.ts"
+   ]
+  },
+  {
+   "key": "fix(agent-core): ignore stale listener events outside an active run",
+   "patch_id": "2cb1622052959dd392a5a424d0dc39104094f4e2",
+   "files": [
+    "packages/agent-core/src/agent.listener-stale.test.ts",
+    "packages/agent-core/src/agent.ts"
+   ],
+   "tests": [
+    "packages/agent-core/src/agent.listener-stale.test.ts"
+   ]
+  },
+  {
+   "key": "fix(ui): clear stale legacy default markers when staging an explicit-ownership default",
+   "patch_id": "d6929d138e02fa7d2d2d5e5f09a3a6447ee61051",
+   "files": [
+    "ui/src/lib/config/config-draft-model.test.ts",
+    "ui/src/lib/config/config-draft-model.ts"
+   ],
+   "tests": [
+    "ui/src/lib/config/config-draft-model.test.ts"
+   ]
+  }
+ ]
+}
