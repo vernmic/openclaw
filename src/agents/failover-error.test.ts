@@ -690,6 +690,23 @@ describe("isNonProviderRuntimeCoordinationError", () => {
     ).toBe(false);
     expect(isNonProviderRuntimeCoordinationError(null)).toBe(false);
   });
+
+  it("treats a rebuilding transcript projection as coordination, direct and nested", () => {
+    // Fork regression: a rebuilding projection was classified "unknown", so the
+    // fallback loop treated session state as a model verdict and exhausted every
+    // candidate. Shapes the selected-U error-graph walk (error, cause, errors[], suppressed).
+    const projection = new Error("Session transcript projection is rebuilding: sess-1");
+    projection.name = "SessionTranscriptProjectionUnavailableError";
+    for (const error of [
+      projection,
+      new Error("worker turn failed", { cause: projection }),
+      { error: projection },
+      new AggregateError([new Error("other"), projection], "lane task failed"),
+    ]) {
+      expect(isNonProviderRuntimeCoordinationError(error)).toBe(true);
+      expect(resolveModelFallbackError(error)).toEqual({ kind: "coordination", error });
+    }
+  });
 });
 
 it("does not treat an AbortError matching transport timeout wording as a signal timeout", () => {
