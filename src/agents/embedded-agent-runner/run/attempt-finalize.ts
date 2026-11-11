@@ -1,4 +1,7 @@
-import { OPENCLAW_EMBEDDED_CONTEXT_ENGINE_HOST } from "../../../context-engine/host-compat.js";
+import {
+  OPENCLAW_EMBEDDED_CONTEXT_ENGINE_HOST,
+  supportsContextEngineDurableTurnAdvancement,
+} from "../../../context-engine/host-compat.js";
 import { createAbortError } from "../../../infra/abort-signal.js";
 import { freezeDiagnosticTraceContext } from "../../../infra/diagnostic-trace-context.js";
 import { formatErrorMessage } from "../../../infra/errors.js";
@@ -212,10 +215,26 @@ export async function completeEmbeddedAttemptAfterTurn(
   const contextEngineAfterTurnCheckpoint = sessionRuntime.contextGuards.getAfterTurnCheckpoint();
   const { lastCallUsage, promptCache, compactionOccurredThisAttempt } = settled;
   const { beforeAgentFinalizeRevisionReason } = prompt;
+  let contextEngineTurn: { logicalTurnId: string; enginePluginId?: string } | undefined;
 
   // Context-engine hooks may call runtime LLM capabilities. Only the transcript
   // rewrite callback reacquires the synchronous session write boundary.
   if (activeContextEngine && !beforeAgentFinalizeRevisionReason) {
+    // The attempt engine is the lease's effective engine; a degraded lease hands the attempt
+    // the legacy fallback, which is not durable.
+    if (
+      attempt.onContextEngineTurnCandidate &&
+      supportsContextEngineDurableTurnAdvancement(activeContextEngine)
+    ) {
+      const receipt = attempt.userTurnTranscriptRecorder?.getAdmissionReceipt();
+      if (receipt) {
+        const ownerPluginId = resolveActiveContextEnginePluginId();
+        contextEngineTurn = {
+          logicalTurnId: receipt.logicalTurnId,
+          ...(ownerPluginId ? { enginePluginId: ownerPluginId } : {}),
+        };
+      }
+    }
     const lifecycleState = projectAgentRunAttemptTerminal(executionState.terminal);
     let terminalEntryId: string | null | undefined;
     if (attempt.onContextEngineTurnCandidate) {
@@ -399,6 +418,7 @@ export async function completeEmbeddedAttemptAfterTurn(
           sessionAgentId,
           freezeDiagnosticTraceContext(diagnosticTrace),
         ),
+        ...(contextEngineTurn ? { contextEngineTurn } : {}),
         modelProviderId: attempt.provider,
         modelId: attempt.modelId,
         modelContextWindowTokens: attempt.contextTokenBudget ?? attempt.model.contextWindow,
