@@ -20,6 +20,7 @@ import {
 import type { BackupEngine } from "./database-engine/types.js";
 import { hasErrnoCode } from "./errno.js";
 import { resolveNodeCompileCacheEnv } from "./node-compile-cache-env.js";
+import { mergeProcessEnv, resolveDiagnosticProcessEnv } from "./process-env.js";
 import { SQLITE_READONLY_CHILD_ARG } from "./runtime-process-entrypoints.js";
 import { resolveRuntimeProcessEntrypointUrl } from "./runtime-process-url.js";
 import {
@@ -250,11 +251,14 @@ export function captureSqliteReadOnlyWorkerLaunch(
     runtimeGeneration: captureRuntimeWorkerSource(
       resolveRuntimeProcessEntrypointUrl("sqliteReadOnly"),
     ).runtimeGeneration,
-    env: {
-      ...resolveNodeCompileCacheEnv(env),
+    // Storage-only envs carry no platform/temp facts; bootstrap them from this process first.
+    env: mergeProcessEnv([
+      resolveDiagnosticProcessEnv(),
+      resolveNodeCompileCacheEnv(env),
+      env,
       // Auth readers pin this default explicitly; equivalent roots share one child.
-      OPENCLAW_STATE_DIR: resolveStateDir(env),
-    },
+      { OPENCLAW_STATE_DIR: resolveStateDir(env) },
+    ]),
     cwd: tryProcessCwd() ?? tmpdir(),
     transport: broker ? { kind: "broker", owner: broker } : { kind: "native" },
   };
