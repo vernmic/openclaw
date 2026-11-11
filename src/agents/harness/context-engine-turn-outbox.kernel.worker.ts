@@ -197,6 +197,14 @@ function discardContextEngineTurnIntent(params: OutboxKernelParams<"discardInten
       .where("engine_id", "=", params.engineId)
       // Accepted work remains recoverable when publication or acknowledgment fails.
       .where("payload_state", "=", "admitted")
+      /* kysely-allow-raw: admission entry is part of the durable discard fence. */
+      .where(sql`json_extract(payload_json, '$.admission.entryId')`, "=", params.admission.entryId)
+      /* kysely-allow-raw: admission generation is part of the durable discard fence. */
+      .where(
+        sql`json_extract(payload_json, '$.admission.generation')`,
+        "=",
+        params.admission.generation,
+      )
       .where("owner_plugin_id", params.ownerPluginId ? "=" : "is", params.ownerPluginId ?? null),
   );
   return result.numAffectedRows !== undefined && result.numAffectedRows > 0n;
