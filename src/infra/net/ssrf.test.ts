@@ -14,6 +14,7 @@ import {
   isPrivateIpAddress,
   isSameSsrFPolicy,
   mergeSsrFPolicies,
+  resolveTcpKeepAliveConnect,
   resolveSsrFPolicyForUrl,
   ssrfPolicyFromHttpBaseUrlAllowedHostname,
   ssrfPolicyFromHttpBaseUrlAllowedOrigin,
@@ -250,5 +251,24 @@ describe("SSRF policy and pinning", () => {
 
     const pinned = await resolvePinnedHostname("example.com", lookup);
     expect(pinned.addresses).toEqual(["2606:2800:220:1:248:1893:25c8:1946", "93.184.216.34"]);
+  });
+});
+
+describe("configured TCP keepalive", () => {
+  it("leaves connect unchanged when the host list is empty", () => {
+    expect(resolveTcpKeepAliveConnect("api.z.ai", undefined, undefined)).toBeUndefined();
+    expect(resolveTcpKeepAliveConnect("api.z.ai", { hosts: [] }, undefined)).toBeUndefined();
+  });
+
+  it("sets keepalive for a listed host", () => {
+    expect(
+      resolveTcpKeepAliveConnect(
+        "api.z.ai",
+        { hosts: ["z.ai"], initialDelayMs: 15_000 },
+        {
+          lookup: "pinned",
+        },
+      ),
+    ).toEqual({ lookup: "pinned", keepAlive: true, keepAliveInitialDelay: 15_000 });
   });
 });

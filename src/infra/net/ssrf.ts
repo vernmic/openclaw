@@ -18,6 +18,7 @@ import { expectDefined } from "@openclaw/normalization-core";
 import { normalizeUniqueStringEntries } from "@openclaw/normalization-core/string-normalization";
 import type { Dispatcher } from "undici";
 import { racePromiseWithAbortSignal, raceWithTimeout } from "../../../packages/retry/src/index.js";
+import { getRuntimeConfig } from "../../config/config.js";
 import { normalizeHostname } from "./hostname.js";
 import { hasTrustedHostPodmanGatewayLinkLocalExemption } from "./ssrf-trusted-host-linklocal-exemptions.js";
 import {
@@ -648,30 +649,41 @@ function resolvePinnedDispatcherLookup(
   });
 }
 
-/**
- * 15 s TCP keep-alive probes for Z.AI endpoints (Vern, 2026-09-19).
- *
- * The upstream edge resets a stream that sits silent while the model prefills or thinks; a
- * client can only supply transport-level keep-alives (SSE comments flow server -> client), so
- * sockets to *.z.ai get a probe every 15 s while a call is in flight. Scoped at this funnel on
- * purpose: the pinned hostname is in hand here, which is what "the endpoint has zai in it" means.
- */
-function withZaiKeepAliveConnect(
+export function resolveTcpKeepAliveConnect(
+  hostname: string,
+  keepAlive: { hosts?: string[]; initialDelayMs?: number } | undefined,
+  connect: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  const hosts = keepAlive?.hosts;
+  if (!hosts?.length) {
+    return connect;
+  }
+  const host = normalizeHostname(hostname);
+  const matched = hosts.some((entry) => {
+    const suffix = normalizeHostname(entry.trim()).replace(/^\./, "");
+    return suffix.length > 0 && (host === suffix || host.endsWith("." + suffix));
+  });
+  if (!matched) {
+    return connect;
+  }
+  return {
+    ...(connect ?? {}),
+    keepAlive: true,
+    keepAliveInitialDelay: keepAlive?.initialDelayMs ?? 15_000,
+  };
+}
+
+function withConfiguredKeepAliveConnect(
   hostname: string,
   connect: Record<string, unknown> | undefined,
 ): Record<string, unknown> | undefined {
-  const host = normalizeHostname(hostname);
-  // The zai provider now runs on the CN coding endpoint (Vern, 2026-09-19 18:52); the
-  // gate follows the provider's hosts, not one edge, so a rollback to api.z.ai keeps working.
-  const isZaiTransportHost =
-    host === "api.z.ai" ||
-    host.endsWith(".z.ai") ||
-    host === "open.bigmodel.cn" ||
-    host.endsWith(".bigmodel.cn");
-  if (!isZaiTransportHost) {
+  let config;
+  try {
+    config = getRuntimeConfig();
+  } catch {
     return connect;
   }
-  return { ...(connect ?? {}), keepAlive: true, keepAliveInitialDelay: 15_000 };
+  return resolveTcpKeepAliveConnect(hostname, config.net?.tcpKeepAlive, connect);
 }
 
 export function createPinnedDispatcher(
@@ -690,7 +702,7 @@ export function createPinnedDispatcher(
         ...streamTimeouts,
         connect: withPinnedLookup(
           lookup,
-          withZaiKeepAliveConnect(pinned.hostname, policy?.connect),
+          withConfiguredKeepAliveConnect(pinned.hostname, policy?.connect),
         ),
       },
       timeoutMs,
