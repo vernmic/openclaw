@@ -695,7 +695,7 @@ export function createPinnedDispatcher(
           lookup,
           withZaiKeepAliveConnect(pinned.hostname, policy?.connect),
         ),
-      },)
+      },
       timeoutMs,
     );
   }
