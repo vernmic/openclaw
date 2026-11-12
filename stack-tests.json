@@ -131,6 +131,45 @@
    "tests": [
     "src/state/openclaw-state-db-contract.test.ts"
    ]
+  },
+  {
+   "key": "test(stack): map tests by file name and record the busy-timeout carry",
+   "patch_id": "b2376655f19ac63f1f3bff50e3944fba4311c280",
+   "files": [
+    "stack-tests.gen.py",
+    "stack-tests.json"
+   ],
+   "tests": []
+  },
+  {
+   "key": "net(transport): scope the 15 s TCP keep-alive to *.z.ai endpoints - gate where the pinned hostname is known (createPinnedDispatcher); revert the global application from b48ce07c747",
+   "patch_id": "1e9a3f3d762d269d7502b43d221bc583ca6bf0b2",
+   "files": [
+    "src/infra/net/ssrf.ts"
+   ],
+   "tests": [
+    "src/infra/net/ssrf.test.ts"
+   ]
+  },
+  {
+   "key": "net(transport): keep-alive gate follows the zai provider's hosts - include the CN coding endpoint (open.bigmodel.cn) so the insurance tracks the live endpoint after the 18:52 flip",
+   "patch_id": "930f5f7aa9268b60eaeec24b114521671a1792b3",
+   "files": [
+    "src/infra/net/ssrf.ts"
+   ],
+   "tests": [
+    "src/infra/net/ssrf.test.ts"
+   ]
+  },
+  {
+   "key": "fix(net): preserve stream timeouts in zai keep-alive dispatcher",
+   "patch_id": "398fb7a9d4e82091a5c0666f2bd81b48a0f13119",
+   "files": [
+    "src/infra/net/ssrf.ts"
+   ],
+   "tests": [
+    "src/infra/net/ssrf.test.ts"
+   ]
   }
  ]
 }
