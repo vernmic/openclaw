@@ -170,6 +170,29 @@
    "tests": [
     "src/infra/net/ssrf.test.ts"
    ]
+  },
+  {
+   "key": "test(stack): map F3 keep-alive carry",
+   "patch_id": "21939501e356434f4d0dd1f189a914cf955d958d",
+   "files": [
+    "stack-tests.json"
+   ],
+   "tests": []
+  },
+  {
+   "key": "fix(subagents): expire permanently failed deliveries after six hours",
+   "patch_id": "51199676388f509aa74bc415fb4d3c7ee1c13a21",
+   "files": [
+    "docs/.generated/config-baseline.counts.json",
+    "docs/.generated/config-baseline.sha256",
+    "src/agents/subagents/registry/subagent-registry-pressure.test.ts",
+    "src/agents/subagents/registry/subagent-registry-suspended-delivery.ts",
+    "src/agents/subagents/registry/subagent-registry-sweeper.ts",
+    "src/config/zod-schema.agent-defaults-base.ts"
+   ],
+   "tests": [
+    "src/agents/subagents/registry/subagent-registry-pressure.test.ts"
+   ]
   }
  ]
 }
