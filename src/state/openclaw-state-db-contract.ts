@@ -110,8 +110,32 @@ export const LAZY_ADDITIVE_STATE_INDEXES = [
   "skill_workshop_changes_cursor_id_idx",
   "idx_skill_workshop_changes_agent_time",
 ] as const;
+/** Default maximum time one synchronous SQLite call may wait for a lock. */
+export const OPENCLAW_SQLITE_DEFAULT_BUSY_TIMEOUT_MS = 5_000;
+/** Ceiling for an operator-raised busy timeout. */
+export const OPENCLAW_SQLITE_MAX_BUSY_TIMEOUT_MS = 60_000;
+
+/**
+ * Resolves the SQLite busy timeout. `OPENCLAW_SQLITE_BUSY_TIMEOUT_MS` may only
+ * raise the default (up to the ceiling) for hosts with long maintenance holds;
+ * unset, malformed or lower values keep the default.
+ */
+export function resolveOpenClawSqliteBusyTimeoutMs(
+  env: NodeJS.ProcessEnv | undefined = typeof process === "undefined" ? undefined : process.env,
+): number {
+  const raw = env?.OPENCLAW_SQLITE_BUSY_TIMEOUT_MS?.trim();
+  if (!raw || !/^\d+$/.test(raw)) {
+    return OPENCLAW_SQLITE_DEFAULT_BUSY_TIMEOUT_MS;
+  }
+  const requested = Number(raw);
+  return Math.min(
+    Math.max(requested, OPENCLAW_SQLITE_DEFAULT_BUSY_TIMEOUT_MS),
+    OPENCLAW_SQLITE_MAX_BUSY_TIMEOUT_MS,
+  );
+}
+
 /** Maximum time one synchronous SQLite call may wait for a lock. */
-export const OPENCLAW_SQLITE_BUSY_TIMEOUT_MS = 5_000;
+export const OPENCLAW_SQLITE_BUSY_TIMEOUT_MS = resolveOpenClawSqliteBusyTimeoutMs();
 /** User-facing guide for schema refusals; lives here so error sites avoid import cycles. */
 export const OPENCLAW_DATABASE_SCHEMA_DOCS_URL =
   "https://docs.openclaw.ai/reference/database-schemas";
