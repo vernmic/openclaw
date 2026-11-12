@@ -84,6 +84,16 @@ export const OpenClawSchemaShape = {
         .optional(),
     })
     .optional(),
+  net: z
+    .strictObject({
+      tcpKeepAlive: z
+        .strictObject({
+          hosts: z.array(z.string()).optional(),
+          initialDelayMs: z.number().int().min(0).optional(),
+        })
+        .optional(),
+    })
+    .optional(),
   env: z
     .strictObject({
       shellEnv: z
