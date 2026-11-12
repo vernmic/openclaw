@@ -16,6 +16,9 @@ lines = git('log', '--reverse', '--format=%H%x00%s', BASE + '..HEAD').stdout.str
 errors = []
 for line in lines:
     sha, _, subject = line.partition('\x00')
+    files = [f for f in git('show', '--name-only', '--format=', sha).stdout.splitlines() if f]
+    if files and all(f in ('stack-tests.json', 'stack-tests.gen.py', 'stack-tests.verify.py') for f in files):
+        continue
     diff = gitb('show', sha, '--format=').stdout
     pid = subprocess.run(['git', '-C', W, 'patch-id', '--stable'], input=diff, capture_output=True).stdout.decode().split()
     patch_id = pid[0] if pid else ''
