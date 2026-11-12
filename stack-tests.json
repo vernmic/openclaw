@@ -87,6 +87,15 @@
    "tests": [
     "src/context-engine/host-compat.test.ts"
    ]
+  },
+  {
+   "key": "chore(stack): test map row for the capability carry",
+   "patch_id": "ccf9af2bcc616b026535a264798bce7e68831444",
+   "files": [
+    "stack-tests.gen.py",
+    "stack-tests.json"
+   ],
+   "tests": []
   }
  ]
 }
