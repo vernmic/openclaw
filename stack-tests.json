@@ -201,6 +201,28 @@
     "stack-tests.json"
    ],
    "tests": []
+  },
+  {
+   "key": "test(stack): remap configurable retention carry",
+   "patch_id": "57191ea050e5e74295b95d19de62736c9eeab37e",
+   "files": [
+    "stack-tests.json"
+   ],
+   "tests": []
+  },
+  {
+   "key": "feat(net): gate TCP keep-alive by configured host suffixes",
+   "patch_id": "f22f5d0bb03e8b8c720af539799179a01394607b",
+   "files": [
+    "docs/.generated/config-baseline.counts.json",
+    "docs/.generated/config-baseline.sha256",
+    "src/config/zod-schema.root-shape.ts",
+    "src/infra/net/ssrf.test.ts",
+    "src/infra/net/ssrf.ts"
+   ],
+   "tests": [
+    "src/infra/net/ssrf.test.ts"
+   ]
   }
  ]
 }
