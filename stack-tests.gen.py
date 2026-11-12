@@ -7,6 +7,7 @@ OVERRIDES = {
     'src/agents/failover-error.ts': ['src/agents/failover-error.test.ts'],
     'packages/agent-core/src/agent.ts': ['packages/agent-core/src/agent.listener-stale.test.ts'],
     'ui/src/lib/config/config-draft-model.ts': ['ui/src/lib/config/config-draft-model.test.ts'],
+    'src/context-engine/host-compat.ts': ['src/context-engine/host-compat.test.ts'],
 }
 
 def git(*args):

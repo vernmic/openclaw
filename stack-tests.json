@@ -34,6 +34,59 @@
    "tests": [
     "ui/src/lib/config/config-draft-model.test.ts"
    ]
+  },
+  {
+   "key": "chore(stack): map openclaw carries by subject and patch-id",
+   "patch_id": "ace10d9be07c023528573596461d6fc0a41110c1",
+   "files": [
+    "stack-tests.gen.py",
+    "stack-tests.json",
+    "stack-tests.verify.py"
+   ],
+   "tests": []
+  },
+  {
+   "key": "fix(f11): fence outbox discard on admission entry and generation",
+   "patch_id": "d537ea18be8e4f948506bf367affcf2eb3d536f0",
+   "files": [
+    "src/agents/harness/context-engine-turn-outbox.kernel.worker.ts",
+    "src/agents/harness/context-engine-turn-outbox.test.ts"
+   ],
+   "tests": []
+  },
+  {
+   "key": "fix(f11): carry context-engine turn identity into agent_end hooks",
+   "patch_id": "7fa3596d6d7df790675a0571038c1c35653114a7",
+   "files": [
+    "src/agents/embedded-agent-runner/run/attempt-finalize.context-engine-turn.test.ts",
+    "src/agents/embedded-agent-runner/run/attempt-finalize.ts",
+    "src/agents/harness/hook-context.test.ts",
+    "src/agents/harness/hook-context.ts",
+    "src/plugins/hook-agent-context.types.ts"
+   ],
+   "tests": []
+  },
+  {
+   "key": "fix(f11): bootstrap sqlite readonly worker platform env",
+   "patch_id": "7fad7e24501c827e0178ffa11ca3cdd82780618a",
+   "files": [
+    "src/infra/sqlite-readonly-worker.launch-env.test.ts",
+    "src/infra/sqlite-readonly-worker.ts"
+   ],
+   "tests": []
+  },
+  {
+   "key": "feat(context-engine): advertise agent-end-context-engine-turn-v1",
+   "patch_id": "e562913c4ea0e043813e0d2a21268f01a2955f3f",
+   "files": [
+    "docs/concepts/context-engine.md",
+    "src/context-engine/host-compat.test.ts",
+    "src/context-engine/host-compat.ts",
+    "src/context-engine/types.ts"
+   ],
+   "tests": [
+    "src/context-engine/host-compat.test.ts"
+   ]
   }
  ]
 }
