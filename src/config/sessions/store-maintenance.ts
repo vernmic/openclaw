@@ -40,6 +40,7 @@ export type ResolvedSessionMaintenanceConfig = {
   mode: SessionMaintenanceMode;
   pruneAfterMs: number;
   archiveDashboardAfterMs: number | null;
+  archiveSubagentAfterMs: number | null;
   maxEntries: number;
   modelRunPruneAfterMs: number;
   preserveRecentMs?: number | null;
@@ -50,10 +51,13 @@ export type ResolvedSessionMaintenanceConfig = {
 
 export type ResolvedSessionMaintenanceConfigInput = Omit<
   ResolvedSessionMaintenanceConfig,
-  "archiveDashboardAfterMs" | "modelRunPruneAfterMs"
+  "archiveDashboardAfterMs" | "modelRunPruneAfterMs" | "archiveSubagentAfterMs"
 > &
   Partial<
-    Pick<ResolvedSessionMaintenanceConfig, "archiveDashboardAfterMs" | "modelRunPruneAfterMs">
+    Pick<
+      ResolvedSessionMaintenanceConfig,
+      "archiveDashboardAfterMs" | "modelRunPruneAfterMs" | "archiveSubagentAfterMs"
+    >
   >;
 
 function resolveMaintenanceDuration(raw: unknown, fallback: number): number;
@@ -131,6 +135,7 @@ function resolveHighWaterBytes(
 
 export function resolveMaintenanceConfigFromInput(
   maintenance?: SessionMaintenanceConfig,
+  archiveSubagentAfterMs?: number | null,
 ): ResolvedSessionMaintenanceConfig {
   const maxDiskBytes = resolveMaxDiskBytes(maintenance);
   return {
@@ -140,6 +145,7 @@ export function resolveMaintenanceConfigFromInput(
       DEFAULT_SESSION_PRUNE_AFTER_MS,
     ),
     archiveDashboardAfterMs: resolveArchiveDashboardAfterMs(maintenance),
+    archiveSubagentAfterMs: archiveSubagentAfterMs ?? null,
     maxEntries: maintenance?.maxEntries ?? DEFAULT_SESSION_MAX_ENTRIES,
     modelRunPruneAfterMs: DEFAULT_MODEL_RUN_PRUNE_AFTER_MS,
     preserveRecentMs: resolveMaintenanceDuration(maintenance?.preserveRecent, null),
@@ -159,6 +165,7 @@ export function normalizeResolvedMaintenanceConfigInput(
       maintenance.archiveDashboardAfterMs === undefined
         ? DEFAULT_DASHBOARD_ARCHIVE_AFTER_MS
         : maintenance.archiveDashboardAfterMs,
+    archiveSubagentAfterMs: maintenance.archiveSubagentAfterMs ?? null,
     modelRunPruneAfterMs: maintenance.modelRunPruneAfterMs ?? DEFAULT_MODEL_RUN_PRUNE_AFTER_MS,
     preserveRecentMs: maintenance.preserveRecentMs ?? null,
   };
@@ -339,34 +346,46 @@ export function archiveStaleDashboardEntries(
     onArchived?: (params: { key: string; entry: SessionEntry }) => void;
     preserveKeys?: ReadonlySet<string>;
     preserveRecentMs?: number | null;
+    archiveSubagentAfterMs?: number | null;
   } = {},
 ): number {
-  if (archiveAfterMs == null || archiveAfterMs <= 0) {
+  const subagentAfterMs = opts.archiveSubagentAfterMs ?? null;
+  const dashboardEnabled = archiveAfterMs != null && archiveAfterMs > 0;
+  const subagentEnabled = subagentAfterMs != null && subagentAfterMs > 0;
+  if (!dashboardEnabled && !subagentEnabled) {
     return 0;
   }
   const now = opts.nowMs ?? Date.now();
-  const cutoffMs = now - archiveAfterMs;
   let archived = 0;
   for (const [key, entry] of Object.entries(store)) {
     const parsed = parseAgentSessionKey(key);
-    if (
-      !parsed?.rest.startsWith("dashboard:") ||
-      shouldPreserveMaintenanceEntry({ key, entry, ...opts })
-    ) {
+    const rest = parsed?.rest ?? "";
+    const isDashboard = dashboardEnabled && rest.startsWith("dashboard:");
+    const isSubagent = subagentEnabled && rest.startsWith("subagent:");
+    if ((!isDashboard && !isSubagent) || shouldPreserveMaintenanceEntry({ key, entry, ...opts })) {
       continue;
     }
+    const thresholdMs = isSubagent ? subagentAfterMs : archiveAfterMs;
+    if (thresholdMs == null || thresholdMs <= 0) {
+      continue;
+    }
+    const cutoffMs = now - thresholdMs;
     const activityAt = getSessionMaintenanceActivityAt(entry);
     if (activityAt <= 0 || activityAt >= cutoffMs) {
       continue;
     }
     entry.archivedAt = now;
     delete entry.archivedBy;
-    entry.archiveReason = "stale-dashboard";
+    entry.archiveReason = isSubagent ? "age-retention" : "stale-dashboard";
     opts.onArchived?.({ key, entry });
     archived += 1;
   }
   if (archived > 0 && opts.log !== false) {
-    log.info("archived stale dashboard session entries", { archived, archiveAfterMs });
+    log.info("archived stale session entries", {
+      archived,
+      archiveAfterMs,
+      archiveSubagentAfterMs: subagentAfterMs,
+    });
   }
   return archived;
 }
