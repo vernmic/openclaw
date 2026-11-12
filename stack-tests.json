@@ -223,6 +223,30 @@
    "tests": [
     "src/infra/net/ssrf.test.ts"
    ]
+  },
+  {
+   "key": "test(stack): map gated F3 keep-alive carry",
+   "patch_id": "92239dc9f064594d4a4710126686eace0540c3d3",
+   "files": [
+    "stack-tests.json"
+   ],
+   "tests": []
+  },
+  {
+   "key": "feat(sessions): archive orphaned subagent sessions behind opt-in gate",
+   "patch_id": "6f9aa2128806ffc187aca455299765a0a25abc25",
+   "files": [
+    "docs/.generated/config-baseline.counts.json",
+    "docs/.generated/config-baseline.sha256",
+    "src/config/sessions/store-maintenance-plan.ts",
+    "src/config/sessions/store-maintenance-runtime.ts",
+    "src/config/sessions/store-maintenance.subagent-archive.test.ts",
+    "src/config/sessions/store-maintenance.ts",
+    "src/config/zod-schema.agent-defaults-base.ts"
+   ],
+   "tests": [
+    "src/config/sessions/store-maintenance.subagent-archive.test.ts"
+   ]
   }
  ]
 }
