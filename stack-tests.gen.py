@@ -27,7 +27,10 @@ for line in lines:
         if f in OVERRIDES:
             tests.update(OVERRIDES[f])
             continue
-        stem = re.sub(r'\\.(ts|tsx|js|jsx|json)$', '', f)
+        if re.search(r'\.test\.tsx?$', f) and f in tracked:
+            tests.add(f)
+            continue
+        stem = re.sub(r'\.(ts|tsx|js|jsx|json)$', '', f)
         cand = stem + '.test.ts'
         if cand in tracked:
             tests.add(cand)

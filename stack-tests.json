@@ -52,7 +52,9 @@
     "src/agents/harness/context-engine-turn-outbox.kernel.worker.ts",
     "src/agents/harness/context-engine-turn-outbox.test.ts"
    ],
-   "tests": []
+   "tests": [
+    "src/agents/harness/context-engine-turn-outbox.test.ts"
+   ]
   },
   {
    "key": "fix(f11): carry context-engine turn identity into agent_end hooks",
@@ -64,7 +66,10 @@
     "src/agents/harness/hook-context.ts",
     "src/plugins/hook-agent-context.types.ts"
    ],
-   "tests": []
+   "tests": [
+    "src/agents/embedded-agent-runner/run/attempt-finalize.context-engine-turn.test.ts",
+    "src/agents/harness/hook-context.test.ts"
+   ]
   },
   {
    "key": "fix(f11): bootstrap sqlite readonly worker platform env",
@@ -73,7 +78,10 @@
     "src/infra/sqlite-readonly-worker.launch-env.test.ts",
     "src/infra/sqlite-readonly-worker.ts"
    ],
-   "tests": []
+   "tests": [
+    "src/infra/sqlite-readonly-worker.launch-env.test.ts",
+    "src/infra/sqlite-readonly-worker.test.ts"
+   ]
   },
   {
    "key": "feat(context-engine): advertise agent-end-context-engine-turn-v1",
@@ -96,6 +104,33 @@
     "stack-tests.json"
    ],
    "tests": []
+  },
+  {
+   "key": "test(stack): map capability advertisement commit cd2d4b80ce3",
+   "patch_id": "67270dd3699af59507784f46d40cb390fa078601",
+   "files": [
+    "stack-tests.json"
+   ],
+   "tests": []
+  },
+  {
+   "key": "test(stack): ignore test-map maintenance commits during verify",
+   "patch_id": "2836c6e12c862550b9f93fd0b34b051cea681ecf",
+   "files": [
+    "stack-tests.verify.py"
+   ],
+   "tests": []
+  },
+  {
+   "key": "feat(state): allow operators to raise the sqlite busy timeout",
+   "patch_id": "4a402da7153b61a7d5e2dccfc4385fbe3b118703",
+   "files": [
+    "src/state/openclaw-state-db-contract.test.ts",
+    "src/state/openclaw-state-db-contract.ts"
+   ],
+   "tests": [
+    "src/state/openclaw-state-db-contract.test.ts"
+   ]
   }
  ]
 }
