@@ -180,8 +180,8 @@
    "tests": []
   },
   {
-   "key": "fix(subagents): expire permanently failed deliveries after six hours",
-   "patch_id": "51199676388f509aa74bc415fb4d3c7ee1c13a21",
+   "key": "feat(subagents): configurable retention for permanently failed deliveries",
+   "patch_id": "8b5e17e19df7a909c5785060bcbae3a5c7404ab0",
    "files": [
     "docs/.generated/config-baseline.counts.json",
     "docs/.generated/config-baseline.sha256",
@@ -193,6 +193,14 @@
    "tests": [
     "src/agents/subagents/registry/subagent-registry-pressure.test.ts"
    ]
+  },
+  {
+   "key": "test(stack): map F12 delivery-expiry carry",
+   "patch_id": "6ccec422e4dd3763636e0f4f178d9c717e0ce2b0",
+   "files": [
+    "stack-tests.json"
+   ],
+   "tests": []
   }
  ]
 }
