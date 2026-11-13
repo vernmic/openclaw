@@ -186,6 +186,7 @@ it("mirrors a cross-conversation send as display-only when the gate is on", asyn
     expect.objectContaining({ sessionKey: params.sessionKey, text: "answer" }),
   );
   expect(transcriptMocks.append.mock.calls.at(-1)?.[0]).not.toHaveProperty("deliveryMirror");
+  expect(transcriptMocks.append.mock.calls.at(-1)?.[0]).not.toHaveProperty("command");
 });
 
 it.each([
