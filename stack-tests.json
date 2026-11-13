@@ -270,6 +270,28 @@
    "tests": [
     "src/auto-reply/reply/commands-next.talk.test.ts"
    ]
+  },
+  {
+   "key": "test(stack): map next/interrupt native turn-scoped carry",
+   "patch_id": "62cd2a0b989c20a4fff1ea970ce2a80dd54d0e31",
+   "files": [
+    "stack-tests.json"
+   ],
+   "tests": []
+  },
+  {
+   "key": "fix(outbound): mirror cross-conversation message-tool sends behind gate",
+   "patch_id": "7bd55482671d7d55a735a5ce2f55c6e8d1080273",
+   "files": [
+    "docs/.generated/config-baseline.counts.json",
+    "docs/.generated/config-baseline.sha256",
+    "src/config/zod-schema.messages.ts",
+    "src/infra/outbound/source-reply-mirror.test.ts",
+    "src/infra/outbound/source-reply-mirror.ts"
+   ],
+   "tests": [
+    "src/infra/outbound/source-reply-mirror.test.ts"
+   ]
   }
  ]
 }
