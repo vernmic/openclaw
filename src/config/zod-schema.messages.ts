@@ -86,6 +86,7 @@ export const MessagesSchema = z
       .enum(["group-mentions", "group-all", "direct", "all", "off", "none"])
       .optional(),
     statusReactions: z.strictObject({ enabled: z.boolean().optional() }).optional(),
+    mirrorCrossConversationSends: z.boolean().optional(),
   })
   .optional();
 
