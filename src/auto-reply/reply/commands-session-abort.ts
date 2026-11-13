@@ -1,6 +1,11 @@
 // Implements session abort commands and active-run stop targeting.
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { resolveSessionAgentId } from "../../agents/agent-scope.js";
+import {
+  captureExecRequestSubagentSelection,
+  resolveSubagentController,
+} from "../../agents/subagents/registry/subagent-control-scope.js";
+import { killAllControlledSubagentRuns } from "../../agents/subagents/registry/subagent-control.js";
 import { readChannelContextGatewayContextResolver } from "../../channels/message-access/admission-evidence.js";
 import { resolveSessionStorePathCore, type SessionEntry } from "../../config/sessions.js";
 import { getPluginRuntimeGatewayRequestScope } from "../../plugins/runtime/gateway-request-scope.js";
@@ -66,7 +71,10 @@ function captureAbortTarget(params: Parameters<CommandHandler>[0], abortTarget: 
   });
 }
 
-async function executeChannelUserStop(params: Parameters<CommandHandler>[0]) {
+async function executeChannelUserStop(
+  params: Parameters<CommandHandler>[0],
+  source: "channel-user" | "talk" = "channel-user",
+) {
   const abortTarget = resolveAbortTarget(params);
   const capture = captureAbortTarget(params, abortTarget);
   abortTarget.sessionId = capture.sessionId;
@@ -91,6 +99,7 @@ async function executeChannelUserStop(params: Parameters<CommandHandler>[0]) {
     throw new Error("The selected session changed before it could be stopped.");
   }
   const stop = abortSessionRunTargetWithOutcome({
+    source,
     capture,
     retirements,
     assertCurrent,
@@ -151,7 +160,83 @@ async function executeChannelUserStop(params: Parameters<CommandHandler>[0]) {
 
 export const handleStopCommand: CommandHandler = defineAuthorizedTextCommand(
   { label: "/stop", match: (body) => (body === "/stop" ? true : null) },
-  executeChannelUserStop,
+  (params) => executeChannelUserStop(params),
+);
+
+async function executeNextCommand(params: Parameters<CommandHandler>[0]) {
+  const abortTarget = resolveAbortTarget(params);
+  const capture = captureAbortTarget(params, abortTarget);
+  abortTarget.sessionId = capture.sessionId;
+  const retirements: Promise<void>[] = [];
+  const assertCurrent = () => {
+    if (params.opts?.isCommandTargetCurrent?.sessionSource) {
+      params.opts.isCommandTargetCurrent.sessionSource();
+      return;
+    }
+    if (params.opts?.isCommandTargetCurrent?.() === false) {
+      throw new Error("The selected session changed before it could be stopped.");
+    }
+  };
+  const stop = abortSessionRunTargetWithOutcome({
+    source: "talk",
+    capture,
+    assertCurrent,
+    retirements,
+    hookContext: {
+      sessionKey: abortTarget.key ?? params.sessionKey ?? "",
+      sessionEntry: abortTarget.entry,
+      sessionId: abortTarget.sessionId,
+      commandSource: params.command.surface,
+      senderId: params.command.senderId,
+    },
+  });
+  const outcome = await completeAbortRetirements(async () => await stop.completed, retirements);
+  if (outcome.alreadyFinalizing) {
+    return commandReply("Agent reply is already finalizing and can no longer be interrupted.");
+  }
+  let killed = 0;
+  const runId = [...capture.requestRunIds][0];
+  if (runId) {
+    const controller = resolveSubagentController({
+      cfg: params.cfg,
+      agentSessionKey: abortTarget.key ?? params.sessionKey,
+      agentId: abortTarget.agentId,
+    });
+    const selection = captureExecRequestSubagentSelection({
+      cfg: params.cfg,
+      controller,
+      requesterTurnRunId: runId,
+      owners: [],
+    });
+    if (selection.runs.length > 0) {
+      const result = await killAllControlledSubagentRuns({
+        cfg: params.cfg,
+        controller,
+        runs: selection.runs,
+        requestSelection: selection,
+        assertCurrent,
+      });
+      killed = "killed" in result ? result.killed : 0;
+    }
+  }
+  const queued = capture.controller.queuedInputs.length;
+  if (!outcome.aborted && queued === 0) {
+    return commandReply("No active turn to end. Agent is idle, nothing queued.");
+  }
+  const suffix = killed > 0 ? ` Stopped ${killed} sub-agent${killed === 1 ? "" : "s"}.` : "";
+  return commandReply(
+    queued > 0
+      ? `⚙️ Turn ended. Busy again with ${queued} queued items.${suffix}`
+      : `⚙️ Turn ended. Agent is idle, nothing queued.${suffix}`,
+  );
+}
+
+export const handleNextCommand: CommandHandler = defineAuthorizedTextCommand(
+  {
+    label: "/next",
+    match: (body) => (body === "/next" || body === "/interrupt" ? true : null),
+  },
+  executeNextCommand,
 );
 
 export const handleAbortTrigger: CommandHandler = defineAuthorizedTextCommand(
@@ -159,5 +244,5 @@ export const handleAbortTrigger: CommandHandler = defineAuthorizedTextCommand(
     label: "abort trigger",
     match: (_body, params) => (isAbortTrigger(params.command.rawBodyNormalized) ? true : null),
   },
-  executeChannelUserStop,
+  (params) => executeChannelUserStop(params),
 );
