@@ -292,6 +292,24 @@
    "tests": [
     "src/infra/outbound/source-reply-mirror.test.ts"
    ]
+  },
+  {
+   "key": "test(stack): map cross-conversation mirror gate",
+   "patch_id": "05d840f98e75f7145c9054c7ff53c89600a86c8f",
+   "files": [
+    "stack-tests.json"
+   ],
+   "tests": []
+  },
+  {
+   "key": "test(outbound): assert cross-conversation mirror is transcript-only",
+   "patch_id": "17f1dc7f45b7b7a983b3c06dc73e92d9b8b5f744",
+   "files": [
+    "src/infra/outbound/source-reply-mirror.test.ts"
+   ],
+   "tests": [
+    "src/infra/outbound/source-reply-mirror.test.ts"
+   ]
   }
  ]
 }
