@@ -420,40 +420,64 @@ function isDeliveredCurrentSourceReplyAction(params: SourceReplyTranscriptMirror
   return Boolean(repliedToMessageId && currentMessageId && repliedToMessageId === currentMessageId);
 }
 
-/** Mirrors successful outbound source replies into the owning session transcript. */
-export async function mirrorDeliveredSourceReplyToTranscript(
-  params: SourceReplyTranscriptMirrorParams,
-): Promise<boolean> {
-  const deliveryFact = projectPluginMessageDeliveryFact(params.deliveredPayload);
-  if (
-    (deliveryFact && (deliveryFact.status !== "settled" || deliveryFact.partialDelivery)) ||
-    !matchesDeliveredSourceTargets(params, deliveryFact) ||
-    !isCurrentSourceConversation(params, params.sourceReplyFinal === true)
-  ) {
-    return false;
-  }
-
+function buildSentActionMirror(actionParams: Record<string, unknown>) {
   const plan = createOutboundPayloadPlan([
     {
-      text:
-        readTrimmedStringAlias(params.actionParams, ["message", "content", "text", "caption"]) ??
-        "",
-      mediaUrl: readTrimmedStringAlias(params.actionParams, [
+      text: readTrimmedStringAlias(actionParams, ["message", "content", "text", "caption"]) ?? "",
+      mediaUrl: readTrimmedStringAlias(actionParams, [
         "mediaUrl",
         "media",
         "path",
         "filePath",
         "fileUrl",
       ]),
-      mediaUrls: normalizeOptionalTrimmedStringList(params.actionParams.mediaUrls),
-      presentation: params.actionParams.presentation as ReplyPayload["presentation"],
-      interactive: params.actionParams.interactive as ReplyPayload["interactive"],
-      channelData: params.actionParams.channelData as ReplyPayload["channelData"],
-      location: normalizeOutboundLocation(params.actionParams.location),
+      mediaUrls: normalizeOptionalTrimmedStringList(actionParams.mediaUrls),
+      presentation: actionParams.presentation as ReplyPayload["presentation"],
+      interactive: actionParams.interactive as ReplyPayload["interactive"],
+      channelData: actionParams.channelData as ReplyPayload["channelData"],
+      location: normalizeOutboundLocation(actionParams.location),
     },
   ]);
   const mirror = projectOutboundPayloadPlanForMirror(plan);
-  if (!mirror.text && mirror.mediaUrls.length === 0) {
+  return mirror.text || mirror.mediaUrls.length > 0 ? mirror : undefined;
+}
+
+/** Mirrors successful outbound source replies into the owning session transcript. */
+export async function mirrorDeliveredSourceReplyToTranscript(
+  params: SourceReplyTranscriptMirrorParams,
+): Promise<boolean> {
+  const deliveryFact = projectPluginMessageDeliveryFact(params.deliveredPayload);
+  if (deliveryFact && (deliveryFact.status !== "settled" || deliveryFact.partialDelivery)) {
+    return false;
+  }
+  const sourceTarget =
+    matchesDeliveredSourceTargets(params, deliveryFact) &&
+    isCurrentSourceConversation(params, params.sourceReplyFinal === true);
+  const mirror = buildSentActionMirror(params.actionParams);
+  if (!mirror) {
+    return false;
+  }
+  if (!sourceTarget) {
+    if (
+      params.action === "send" &&
+      params.sessionKey?.trim() &&
+      params.cfg?.messages?.mirrorCrossConversationSends === true
+    ) {
+      const writerFence = getOwnedSessionTranscriptWriterFence({ sessionKey: params.sessionKey });
+      await appendAssistantMessageToSessionTranscript({
+        agentId: params.agentId,
+        sessionKey: params.sessionKey,
+        ...(params.sessionId ? { expectedSessionId: params.sessionId } : {}),
+        ...(writerFence?.expectedLifecycleRevision !== undefined
+          ? { expectedLifecycleRevision: writerFence.expectedLifecycleRevision }
+          : {}),
+        ...(writerFence ? { expectedWriterRunId: writerFence.expectedWriterRunId } : {}),
+        text: mirror.text,
+        mediaUrls: mirror.mediaUrls.length ? mirror.mediaUrls : undefined,
+        idempotencyKey: params.idempotencyKey,
+        config: params.cfg,
+      });
+    }
     return false;
   }
   const sourceTurnId = normalizeOptionalString(params.toolContext?.currentSourceTurnId);
