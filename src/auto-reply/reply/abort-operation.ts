@@ -234,6 +234,7 @@ export function abortSessionRunTargetWithOutcome(params: {
   recordAbortTarget?: SessionStopRequest["recordAbortTarget"];
   stopChildren?: SessionStopRequest["stopChildren"];
   retirements: Promise<void>[];
+  source?: "channel-user" | "talk";
 }) {
   let selectedCapture: ChannelStopCapture | undefined;
   const resolveCapture = () =>
@@ -264,7 +265,7 @@ export function abortSessionRunTargetWithOutcome(params: {
     }
   };
   return stopSession({
-    source: "channel-user",
+    source: params.source ?? "channel-user",
     capture: () => resolveCapture().controller,
     assertCurrent: params.assertCurrent,
     hookContext: params.hookContext,

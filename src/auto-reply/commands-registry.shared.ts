@@ -484,6 +484,26 @@ export function buildBuiltinChatCommands(
       activeRunSafe: true,
       modelIndependent: "no-args",
     }),
+    defineBuiltinCommand(
+      "next",
+      "End the current turn and keep queued work.",
+      "session",
+      "standard",
+      {
+        activeRunSafe: true,
+        modelIndependent: "no-args",
+      },
+    ),
+    defineBuiltinCommand(
+      "interrupt",
+      "End the current turn and keep queued work.",
+      "session",
+      "standard",
+      {
+        activeRunSafe: true,
+        modelIndependent: "no-args",
+      },
+    ),
     defineBuiltinCommand("restart", "Restart OpenClaw.", "tools", "power", {
       modelIndependent: "no-args",
     }),

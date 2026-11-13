@@ -33,6 +33,7 @@ import {
   handleAbortTrigger,
   handleActivationCommand,
   handleFastCommand,
+  handleNextCommand,
   handleRestartCommand,
   handleSendPolicyCommand,
   handleSessionCommand,
@@ -92,6 +93,7 @@ export function loadCommandHandlers(): CommandHandler[] {
     handleDebugCommand,
     handleModelsCommand,
     handleStopCommand,
+    handleNextCommand,
     handleCompactCommand,
     handleAbortTrigger,
   ];
