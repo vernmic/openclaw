@@ -45,7 +45,11 @@ import {
   rejectNonOwnerCommand,
   rejectUnauthorizedCommand,
 } from "./command-gates.js";
-import { handleAbortTrigger, handleStopCommand } from "./commands-session-abort.js";
+import {
+  handleAbortTrigger,
+  handleNextCommand,
+  handleStopCommand,
+} from "./commands-session-abort.js";
 import {
   persistCommandSession,
   sessionEntryPersistenceConflictReply,
@@ -492,4 +496,4 @@ export const handleRestartCommand: CommandHandler = defineGatewayControlCommand(
   },
 );
 
-export { handleAbortTrigger, handleStopCommand };
+export { handleAbortTrigger, handleNextCommand, handleStopCommand };
