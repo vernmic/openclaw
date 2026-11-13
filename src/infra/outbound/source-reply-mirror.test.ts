@@ -165,6 +165,29 @@ it("keeps a non-send action outside transcript ownership", async () => {
   expect(transcriptMocks.append).not.toHaveBeenCalled();
 });
 
+it("does not mirror a cross-conversation send when the gate is off", async () => {
+  const params = {
+    ...direct,
+    cfg: { messages: { mirrorCrossConversationSends: false } },
+    deliveredPayload: { ok: true, messageId: "sent-elsewhere", channelId: "other-chat" },
+  };
+  await expect(mirrorDeliveredSourceReplyToTranscript(params)).resolves.toBe(false);
+  expect(transcriptMocks.append).not.toHaveBeenCalled();
+});
+
+it("mirrors a cross-conversation send as display-only when the gate is on", async () => {
+  const params = {
+    ...direct,
+    cfg: { messages: { mirrorCrossConversationSends: true } },
+    deliveredPayload: { ok: true, messageId: "sent-elsewhere", channelId: "other-chat" },
+  };
+  await expect(mirrorDeliveredSourceReplyToTranscript(params)).resolves.toBe(false);
+  expect(transcriptMocks.append).toHaveBeenCalledWith(
+    expect.objectContaining({ sessionKey: params.sessionKey, text: "answer" }),
+  );
+  expect(transcriptMocks.append.mock.calls.at(-1)?.[0]).not.toHaveProperty("deliveryMirror");
+});
+
 it.each([
   ["topic reply", { ...topic, deliveredPayload: topicDelivery }, "topic reply"],
   [

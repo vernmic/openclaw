@@ -446,13 +446,12 @@ export async function mirrorDeliveredSourceReplyToTranscript(
 
 async function mirrorSourceReply(params: SourceReplyTranscriptMirrorParams): Promise<boolean> {
   const deliveryFact = projectPluginMessageDeliveryFact(params.deliveredPayload);
-  if (
-    (deliveryFact && (deliveryFact.status !== "settled" || deliveryFact.partialDelivery)) ||
-    !matchesDeliveredSourceTargets(params, deliveryFact) ||
-    !isCurrentSourceConversation(params, params.sourceReplyFinal === true)
-  ) {
+  if (deliveryFact && (deliveryFact.status !== "settled" || deliveryFact.partialDelivery)) {
     return false;
   }
+  const sourceTarget =
+    matchesDeliveredSourceTargets(params, deliveryFact) &&
+    isCurrentSourceConversation(params, params.sourceReplyFinal === true);
 
   const plan = createOutboundPayloadPlan(
     params.deliveredPayloads ?? [
@@ -477,6 +476,33 @@ async function mirrorSourceReply(params: SourceReplyTranscriptMirrorParams): Pro
   );
   const mirror = projectOutboundPayloadPlanForMirror(plan);
   if (!mirror.text && mirror.mediaUrls.length === 0) {
+    return false;
+  }
+  if (!sourceTarget) {
+    // Gated (messages.mirrorCrossConversationSends, default off): a message-tool send to another
+    // conversation is recorded in the sending session's transcript only.
+    if (
+      params.action === "send" &&
+      params.sessionKey?.trim() &&
+      params.cfg?.messages?.mirrorCrossConversationSends === true
+    ) {
+      const crossWriterFence = getOwnedSessionTranscriptWriterFence({
+        sessionKey: params.sessionKey,
+      });
+      await appendAssistantMessageToSessionTranscript({
+        agentId: params.agentId,
+        sessionKey: params.sessionKey,
+        ...(params.sessionId ? { expectedSessionId: params.sessionId } : {}),
+        ...(crossWriterFence?.expectedLifecycleRevision !== undefined
+          ? { expectedLifecycleRevision: crossWriterFence.expectedLifecycleRevision }
+          : {}),
+        ...(crossWriterFence ? { expectedWriterRunId: crossWriterFence.expectedWriterRunId } : {}),
+        text: mirror.text,
+        mediaUrls: mirror.mediaUrls.length ? mirror.mediaUrls : undefined,
+        idempotencyKey: params.idempotencyKey,
+        config: params.cfg,
+      });
+    }
     return false;
   }
   const sourceTurnId = normalizeOptionalString(params.toolContext?.currentSourceTurnId);
