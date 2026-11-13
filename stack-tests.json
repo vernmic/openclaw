@@ -247,6 +247,29 @@
    "tests": [
     "src/config/sessions/store-maintenance.subagent-archive.test.ts"
    ]
+  },
+  {
+   "key": "test(stack): map subagent archive port",
+   "patch_id": "d7814fe130c3af36fdb3b107e4734fa6acba84d4",
+   "files": [
+    "stack-tests.json"
+   ],
+   "tests": []
+  },
+  {
+   "key": "feat(commands): /next and /interrupt end only the captured turn",
+   "patch_id": "c408af522cc262d655b404922028a43c21bc44dc",
+   "files": [
+    "src/auto-reply/commands-registry.shared.ts",
+    "src/auto-reply/reply/abort-operation.ts",
+    "src/auto-reply/reply/commands-handlers.runtime.ts",
+    "src/auto-reply/reply/commands-next.talk.test.ts",
+    "src/auto-reply/reply/commands-session-abort.ts",
+    "src/auto-reply/reply/commands-session.ts"
+   ],
+   "tests": [
+    "src/auto-reply/reply/commands-next.talk.test.ts"
+   ]
   }
  ]
 }
