@@ -18,9 +18,9 @@ import { expectDefined } from "@openclaw/normalization-core";
 import { normalizeUniqueStringEntries } from "@openclaw/normalization-core/string-normalization";
 import type { Dispatcher } from "undici";
 import { racePromiseWithAbortSignal, raceWithTimeout } from "../../../packages/retry/src/index.js";
-import { getRuntimeConfig } from "../../config/config.js";
 import { normalizeHostname } from "./hostname.js";
 import { hasTrustedHostPodmanGatewayLinkLocalExemption } from "./ssrf-trusted-host-linklocal-exemptions.js";
+import { readTcpKeepAliveSettings } from "./tcp-keepalive-config.js";
 import {
   createHttp1Agent,
   createHttp1EnvHttpProxyAgent,
@@ -677,13 +677,7 @@ function withConfiguredKeepAliveConnect(
   hostname: string,
   connect: Record<string, unknown> | undefined,
 ): Record<string, unknown> | undefined {
-  let config;
-  try {
-    config = getRuntimeConfig();
-  } catch {
-    return connect;
-  }
-  return resolveTcpKeepAliveConnect(hostname, config.net?.tcpKeepAlive, connect);
+  return resolveTcpKeepAliveConnect(hostname, readTcpKeepAliveSettings(), connect);
 }
 
 export function createPinnedDispatcher(

@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { clearExecutablePathCache } from "../infra/executable-path.js";
+import { registerTcpKeepAliveSettingsReader } from "../infra/net/tcp-keepalive-config.js";
 import { prepareRuntimePluginsConfig } from "../plugins/config-state.js";
 import { sessionChanges } from "../sessions/session-row-changes.js";
 import { isDeeplyFrozenPlainData } from "../shared/immutable-data.js";
@@ -133,6 +134,7 @@ let runtimeSourceConfigValueFact: RuntimeConfigValueFact | null = null;
 let runtimeConfigAppliedHash: string | null = null;
 let runtimeConfigSnapshotRevision = 0;
 let runtimeConfigSnapshotRefreshHandler: RuntimeConfigSnapshotRefreshHandler | null = null;
+registerTcpKeepAliveSettingsReader(() => runtimeConfigSnapshot?.net?.tcpKeepAlive);
 type ManagedRuntimeConfigWritePreflight = (
   sourceConfig: OpenClawConfig,
   refreshOptions?: RuntimeConfigSnapshotRefreshOptions,
