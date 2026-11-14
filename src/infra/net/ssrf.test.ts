@@ -272,3 +272,19 @@ describe("configured TCP keepalive", () => {
     ).toEqual({ lookup: "pinned", keepAlive: true, keepAliveInitialDelay: 15_000 });
   });
 });
+
+describe("TCP keepalive settings reader", () => {
+  it("reads registered settings and tolerates a missing or throwing reader", async () => {
+    const { readTcpKeepAliveSettings, registerTcpKeepAliveSettingsReader } =
+      await import("./tcp-keepalive-config.js");
+    registerTcpKeepAliveSettingsReader(undefined);
+    expect(readTcpKeepAliveSettings()).toBeUndefined();
+    registerTcpKeepAliveSettingsReader(() => ({ hosts: ["z.ai"] }));
+    expect(readTcpKeepAliveSettings()).toEqual({ hosts: ["z.ai"] });
+    registerTcpKeepAliveSettingsReader(() => {
+      throw new Error("config unavailable");
+    });
+    expect(readTcpKeepAliveSettings()).toBeUndefined();
+    registerTcpKeepAliveSettingsReader(undefined);
+  });
+});
