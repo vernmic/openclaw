@@ -91,7 +91,8 @@ export type HookBlockedReason =
   | "plugin-before-tool-call"
   | "plugin-approval"
   | "plugin-approval-unavailable"
-  | "tool-loop";
+  | "tool-loop"
+  | "wrapper-gate-deadline";
 
 type HookBlockedOutcome = {
   blocked: true;

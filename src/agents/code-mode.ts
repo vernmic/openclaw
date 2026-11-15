@@ -5,6 +5,12 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { pruneMapToMaxSize } from "../infra/map-size.js";
 import { finalizeAgentToolAvailability } from "./agent-tool-availability.js";
 import type { HookContext } from "./agent-tools.before-tool-call.js";
+import {
+  appendWrapperGateWarning,
+  resolveWrapperGateCodeModeBoundary,
+  wrapperGatePostExecNote,
+} from "./agent-tools.before-tool-call.wrapper-gate.js";
+import { buildBlockedToolResult } from "./agent-tools.before-tool-call.wrapper.js";
 import { CODE_MODE_NODES_TOOL_ID, isCodeModeSwarmAvailable } from "./code-mode-bridge.js";
 import type { CodeModeCatalogBinding } from "./code-mode-catalog.js";
 import {
@@ -261,6 +267,8 @@ export function createCodeModeTools(ctx: CodeModeToolContext): AnyAgentTool[] {
   // The surface planner owns activation. Capture limits once so an admitted
   // control remains executable during model overrides.
   const config = resolveCodeModeConfig(ctx.runtimeConfig ?? ctx.config, ctx.agentId);
+  // The wrapper gate reads messages.queue from the OpenClaw config, not the Code Mode limits.
+  const gateConfig = ctx.runtimeConfig ?? ctx.config;
   const resultBudget = resolveToolResultBudget(ctx.modelContextWindowTokens);
   const formatResult = (
     rawResult: Awaited<ReturnType<typeof runCodeModeExec | typeof runWait>>,
@@ -296,6 +304,20 @@ export function createCodeModeTools(ctx: CodeModeToolContext): AnyAgentTool[] {
       // Context closure fences new calls; the supplied signal owns in-flight
       // cancellation so sessions_yield can still finish its initiating handoff.
       ctx.abortSignal?.throwIfAborted();
+      // D4: the wrapper gate is model-visible through code mode: the outer exec refuses past the
+      // deadline, and a warning a nested call delivered is surfaced on this result.
+      const gateBoundary = resolveWrapperGateCodeModeBoundary({
+        config: gateConfig,
+        sessionKey: ctx.sessionKey,
+        now: Date.now(),
+      });
+      if (gateBoundary.action === "refuse") {
+        return buildBlockedToolResult({
+          reason: gateBoundary.reason,
+          deniedReason: "wrapper-gate-deadline",
+        }) as never;
+      }
+      const gateExecStartedAt = Date.now();
       const input = readCode(args);
       let runtime: ToolSearchRuntime | undefined;
       const result = await runCodeModeExec({
@@ -312,7 +334,16 @@ export function createCodeModeTools(ctx: CodeModeToolContext): AnyAgentTool[] {
           runtime = value;
         },
       });
-      return formatResult(result, runtime, signal);
+      const formattedResult = formatResult(result, runtime, signal);
+      const gateNote = wrapperGatePostExecNote({
+        config: gateConfig,
+        sessionKey: ctx.sessionKey,
+        execStartedAt: gateExecStartedAt,
+        now: Date.now(),
+      });
+      return gateNote
+        ? appendWrapperGateWarning(formattedResult as never, gateNote)
+        : formattedResult;
     },
   } as AnyAgentTool);
   const waitTool = markCodeModeControlTool({

@@ -44,6 +44,7 @@ import {
   type QueueDedupeMode,
   type QueueSettings,
 } from "./types.js";
+import { noteFollowupEnqueuedForWrapperGate } from "./wrapper-gate.js";
 
 const RECENT_MESSAGE_ID_TTL = 5 * 60 * 1000;
 const MAX_RECENT_MESSAGE_IDS = 10_000;
@@ -174,6 +175,9 @@ export function enqueueFollowupRun(
     const front =
       options.position === "front" && (!deferOverflow || options.steerCandidate === true);
     queue.lastEnqueuedAt = performance.now();
+    // The gate's window is wall-clock (Date.now) like the tool gate that reads it; lastEnqueuedAt
+    // is monotonic, so it is not the window's time base.
+    noteFollowupEnqueuedForWrapperGate(queue, run, Date.now());
     queue.lastRun = run.run;
     run.queueAbortSignal = queue.abortController.signal;
     const queuedInput = run.controllerInput!;

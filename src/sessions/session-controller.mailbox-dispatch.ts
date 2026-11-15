@@ -11,6 +11,7 @@ import {
   isFollowupRunAborted,
   type FollowupRun,
 } from "../auto-reply/reply/queue/types.js";
+import { resolveWrapperGateDrainBoundary } from "../auto-reply/reply/queue/wrapper-gate.js";
 import { captureGatewayScopeMatcher } from "../gateway/session-runtime-scope.js";
 import { notifyGatewayWorkMetricsChanged } from "../infra/gateway-work-metrics-events.js";
 import {
@@ -152,9 +153,15 @@ export function pumpSessionControllerMailbox(mailbox: SessionControllerMailbox):
     return;
   }
   const { first, priority, sources } = selection;
-  const delay =
-    first.ready || first.task || priority
-      ? 0
+  // Wrapper gate (default off): an open fixed collection window holds the bundle until its
+  // wall-clock drain boundary and replaces the trailing quiet debounce, so continuing arrivals
+  // cannot push the handoff past the fixed deadline. A user arrival pulls drainAt to now and wakes.
+  const immediate = Boolean(first.ready || first.task || priority);
+  const gateBoundary = immediate ? undefined : resolveWrapperGateDrainBoundary(mailbox, Date.now());
+  const delay = immediate
+    ? 0
+    : gateBoundary
+      ? Math.max(0, gateBoundary.drainAt - Date.now())
       : Math.max(0, mailbox.lastEnqueuedAt + mailbox.debounceMs - performance.now());
   if (delay > 0) {
     clearTimeout(mailbox.timer);

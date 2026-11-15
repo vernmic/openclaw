@@ -148,6 +148,9 @@ export function getFollowupQueue(
   mailbox.cap =
     typeof settings.cap === "number" && settings.cap > 0 ? Math.floor(settings.cap) : mailbox.cap;
   mailbox.dropPolicy = settings.dropPolicy ?? mailbox.dropPolicy;
+  // Assign unconditionally: flipping the gate off live must reach existing queues, or the tool
+  // gate (reading live config) passes while old queues still hold expired windows.
+  mailbox.wrapperGateSettings = settings.wrapperGate;
   trimSummaryElisionsToCap(mailbox);
   return mailbox;
 }
