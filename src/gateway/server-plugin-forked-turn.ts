@@ -199,6 +199,8 @@ export async function runPluginForkedTurn<T>(
                 ),
               ),
               assertCallerCurrent: assertCurrent,
+              // The fork pays for a turn snapshot only when this call will publish it.
+              collectTurns: params.recordVisibleSession !== undefined,
               onSourceAdmitted: (entry) => {
                 admitted = {
                   sessionId: entry.sessionId,
