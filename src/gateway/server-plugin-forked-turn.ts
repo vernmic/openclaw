@@ -8,6 +8,7 @@ import type { ModelRef } from "../agents/model-ref-shared.js";
 import { resolveSessionModelRef } from "../agents/session-model-ref.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { getAgentRunContext } from "../infra/agent-run-registry.js";
+import { recordPluginForkedTurnSessionIfRequested } from "../plugins/plugin-forked-turn-visible-session.js";
 import type { PluginRuntimeGatewayRequestScope } from "../plugins/runtime/gateway-request-scope.types.js";
 import type {
   SubagentForkedTurnParams,
@@ -208,6 +209,17 @@ export async function runPluginForkedTurn<T>(
             async (outcome) => {
               // A revoked plugin's settlement code never runs; the call rejects instead.
               assertCurrent();
+              // A requested visible record is written before settlement, inside the same detached
+              // admission, so a graceful restart waits for it; a write failure never fails the fork.
+              if (outcome.ok) {
+                await recordPluginForkedTurnSessionIfRequested({
+                  record: params.recordVisibleSession,
+                  config: cfg,
+                  agentId,
+                  workspaceDir: prepared.workspaceDir,
+                  messages: outcome.turns,
+                });
+              }
               const base = { runId, ...(admitted ? { source: admitted } : {}) };
               const text = outcome.ok
                 ? outcome.result.payloads
