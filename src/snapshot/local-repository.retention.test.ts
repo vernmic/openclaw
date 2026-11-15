@@ -99,7 +99,7 @@ it("retains the newly certified point if the wall clock moves backwards", async 
   expect((await fixture.provider.list()).map((item) => item.ref.path)).toEqual([newest.ref.path]);
 });
 
-it("preserves implicit row IDs with the opt-in online acquisition while default copies compact", async () => {
+it("preserves implicit row IDs in retained restore points", async () => {
   const fixture = await createGenericRepositoryFixture();
   withDatabase(fixture.sourcePath, (database) => {
     database.exec(
@@ -121,15 +121,6 @@ it("preserves implicit row IDs with the opt-in online acquisition while default 
       { readOnly: true },
     ),
   ).toEqual({ rowid: 17 });
-  const compacted = await fixture.provider.create({
-    path: fixture.sourcePath,
-    identity: { role: "generic", id: "rowids" },
-  });
-  expect(
-    withDatabase(
-      path.join(compacted.ref.path, "database.sqlite"),
-      (database) => database.prepare("SELECT rowid FROM implicit_rows").get(),
-      { readOnly: true },
-    ),
-  ).toEqual({ rowid: 1 });
+  // Upstream default copies no longer renumber implicit row IDs either; that is upstream's
+  // behavior to test, so this case asserts only the restore-point guarantee.
 });
