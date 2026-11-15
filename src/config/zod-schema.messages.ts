@@ -40,6 +40,15 @@ const QueueModeSchema = z.union([
 const QueueModeBySurfaceSchema = z.record(z.string(), QueueModeSchema).optional();
 const DebounceMsBySurfaceSchema = z.record(z.string(), z.number().int().nonnegative()).optional();
 
+const WrapperGateSchema = z
+  .strictObject({
+    /** Wrapper gate: fixed collection window + tool-dispatch deadline. Default OFF. */
+    enabled: z.boolean().optional(),
+    collectMs: z.number().int().nonnegative().optional(),
+    warnMs: z.number().int().nonnegative().optional(),
+  })
+  .optional();
+
 export const QueueSchema = z
   .strictObject({
     mode: QueueModeSchema.optional(),
@@ -49,6 +58,7 @@ export const QueueSchema = z
     debounceMsByChannel: DebounceMsBySurfaceSchema,
     cap: z.number().int().positive().optional(),
     drop: z.union([z.literal("old"), z.literal("new"), z.literal("summarize")]).optional(),
+    wrapperGate: WrapperGateSchema,
   })
   .optional();
 

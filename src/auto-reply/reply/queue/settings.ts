@@ -38,5 +38,6 @@ export function resolveQueueSettingsCore(params: ResolveQueueSettingsParams): Qu
     debounceMs: Math.max(0, debounceRaw),
     cap: Math.max(1, Math.floor(capRaw)),
     dropPolicy: dropRaw,
+    wrapperGate: queueCfg?.wrapperGate,
   };
 }

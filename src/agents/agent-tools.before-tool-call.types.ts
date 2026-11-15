@@ -89,7 +89,8 @@ export type BeforeToolCallPolicyDiagnosticState = {
 export type HookBlockedReason =
   | "plugin-before-tool-call"
   | "plugin-approval"
-  | "plugin-approval-unavailable";
+  | "plugin-approval-unavailable"
+  | "wrapper-gate-deadline";
 
 type HookBlockedOutcome = {
   blocked: true;
