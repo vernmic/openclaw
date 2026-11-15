@@ -11,7 +11,7 @@ import type { RequesterOrigin } from "../agents/requester-origin.js";
 import type { resolveAgentTurnExecutionStatus } from "../auto-reply/reply/agent-runner-execution-status.js";
 import type { FollowupQueueDisposition } from "../auto-reply/reply/queue-policy.js";
 import type { FollowupRunPayload } from "../auto-reply/reply/queue/followup-run-payload.types.js";
-import type { QueueSettings } from "../auto-reply/reply/queue/queue-settings.types.js";
+import type { GateState, QueueSettings } from "../auto-reply/reply/queue/queue-settings.types.js";
 import type { ReplyFollowupAdmissionBarrierTimeoutPolicy } from "../auto-reply/reply/reply-dispatcher.types.js";
 import type { ReplyOperationStaleReason } from "../auto-reply/reply/reply-run-finalization-lease.js";
 import type { SessionEntryTargetPatchScope } from "../config/sessions/session-accessor.types.js";
@@ -588,7 +588,7 @@ export type SessionControllerMailboxClaim = {
 type FollowupSummaryEntry = { source: FollowupRun; line: string };
 
 /** All runnable inputs, including direct native producers, share this ordered owner. */
-export type SessionControllerMailbox = {
+export type SessionControllerMailbox = GateState & {
   readonly key: string;
   readonly owner: SessionControllerEntry;
   clearing?: boolean;

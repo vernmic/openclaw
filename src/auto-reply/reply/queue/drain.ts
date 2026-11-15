@@ -182,6 +182,10 @@ async function executeClaim(
     releaseSessionControllerClaim(claim);
     return;
   }
+  // Wrapper gate D1/N1: every claimed turn is an admission the window existed to force. Consume
+  // the collection window this claim drains, so the admitted turn's own tool calls pass the gate;
+  // later arrivals open a fresh window from their own arrival.
+  delete queue.wrapperGateWindow;
   const cancellation = createAggregateCancellation(sources);
   const aggregateOwner = resolveAggregateOwner(sources);
   const adopt = async () => {

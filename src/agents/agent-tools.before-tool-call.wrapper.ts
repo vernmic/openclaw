@@ -43,6 +43,10 @@ import {
   summarizeToolParams,
   startToolExecutionLiveness,
 } from "./agent-tools.before-tool-call.diagnostics.js";
+import {
+  finalizeBeforeToolCallExecutionParams,
+  prepareBeforeToolCallExecutionParams,
+} from "./agent-tools.before-tool-call.execution-params.js";
 import { runBeforeToolCallHook } from "./agent-tools.before-tool-call.policy.js";
 import {
   buildAdjustedParamsKey,
@@ -60,6 +64,10 @@ import type {
   HookContext,
   HookOutcome,
 } from "./agent-tools.before-tool-call.types.js";
+import {
+  appendWrapperGateWarning,
+  resolveWrapperGateToolDecision,
+} from "./agent-tools.before-tool-call.wrapper-gate.js";
 import {
   createInternalExecutionPreparer,
   readInternalExecutionControl,
@@ -80,7 +88,6 @@ import {
   isCodeModeControlTool,
   getCodeModeExecBeforeHookMetadata,
   normalizeCodeModeExecBeforeHookParams,
-  reconcileCodeModeExecBeforeHookParams,
 } from "./code-mode-control-tools.js";
 import { createGatewayToolPolicyAssertion } from "./gateway-tool-policy.js";
 import { captureAgentPluginRuntimeRefresh } from "./plugin-runtime-refresh.js";
@@ -97,6 +104,11 @@ import { buildToolMutationState } from "./tool-mutation.js";
 import { normalizeToolPolicyName } from "./tool-policy.js";
 import { createToolSkillUseRecorder } from "./tool-skill-use-scope.js";
 import type { AnyAgentTool } from "./tools/common.js";
+
+export {
+  finalizeBeforeToolCallExecutionParams,
+  prepareBeforeToolCallExecutionParams,
+} from "./agent-tools.before-tool-call.execution-params.js";
 import { getGatewayToolCallerIdentity } from "./tools/gateway-caller-context.js";
 
 type ForwardedToolExecution = (...args: unknown[]) => ReturnType<AnyAgentTool["execute"]>;
@@ -105,54 +117,6 @@ const INTERNAL_DISPOSED_RESULT = {
   content: [],
   details: { status: "skipped", deniedReason: "internal-dispose" },
 };
-
-/** Run tool-owned preparation while retaining the exact prepared object. */
-export async function prepareBeforeToolCallExecutionParams(params: {
-  tool: AnyAgentTool;
-  params: unknown;
-  toolCallId?: string;
-  ctx?: HookContext;
-  signal?: AbortSignal;
-}): Promise<unknown> {
-  const prepare = params.tool.prepareBeforeToolCallParams;
-  if (prepare && params.ctx?.awaitSessionDiffBaseline) {
-    await params.ctx.awaitSessionDiffBaseline();
-    params.signal?.throwIfAborted();
-  }
-  return prepare
-    ? await prepare(params.params, {
-        ...(params.toolCallId ? { toolCallId: params.toolCallId } : {}),
-        ...(params.ctx ? { hookContext: params.ctx } : {}),
-        ...(params.signal ? { signal: params.signal } : {}),
-      })
-    : params.params;
-}
-
-/** Reconcile hook rewrites and restore tool-owned state before execution. */
-export function finalizeBeforeToolCallExecutionParams(params: {
-  tool: AnyAgentTool;
-  preparedParams: unknown;
-  hookParams: unknown;
-  adjustedParams: unknown;
-  finalizerMode: "adapter" | "wrapped";
-}): unknown {
-  const reconciledParams = reconcileCodeModeExecBeforeHookParams({
-    owner: { tool: params.tool },
-    originalParams: params.preparedParams,
-    hookParams: params.hookParams,
-    adjustedParams: params.adjustedParams,
-  });
-  // Tool preparation may key private state in a WeakMap by this exact object.
-  // Keep the original identity until finalization transfers valid state to rewrites.
-  const finalize = params.tool.finalizeBeforeToolCallParams;
-  if (!finalize) {
-    return reconciledParams;
-  }
-  if (params.finalizerMode === "adapter") {
-    return finalize(reconciledParams, params.preparedParams);
-  }
-  return finalize.call(params.tool, reconciledParams, params.preparedParams) ?? reconciledParams;
-}
 
 class BeforeToolCallFailureError extends Error {
   constructor(
@@ -382,6 +346,25 @@ export function wrapToolWithBeforeToolCallHook(
         recordPreExecutionError(error, params, "tool_preparation");
         throw tagBeforeToolCallFailure(error, signal, "tool_preparation");
       }
+      // Wrapper gate (default off): refuse new dispatches once the session's queued-input handoff
+      // deadline has passed. Checked before policy work and rechecked after the policy awaits.
+      const wrapperGateEntry = resolveWrapperGateToolDecision({
+        config: ctx?.config,
+        sessionKey: ctx?.sessionKey,
+        now: Date.now(),
+        toolName: normalizedToolName,
+      });
+      if (wrapperGateEntry.action === "refuse") {
+        return await blockToolCall({
+          reason: wrapperGateEntry.reason,
+          deniedReason: "wrapper-gate-deadline",
+          toolParams: preparedParams,
+        });
+      }
+      const wrapperGateWarningNote =
+        wrapperGateEntry.action === "warn" || wrapperGateEntry.action === "pass"
+          ? wrapperGateEntry.note
+          : undefined;
       const hookParams = normalizeCodeModeExecBeforeHookParams({ tool, params: preparedParams });
       const hookMetadata = getCodeModeExecBeforeHookMetadata({ tool, params: preparedParams });
       let outcome: HookOutcome;
@@ -452,6 +435,21 @@ export function wrapToolWithBeforeToolCallHook(
           return INTERNAL_DISPOSED_RESULT;
         }
         onImplementationStart = decision.start;
+      }
+      // Wrapper gate recheck after approval/policy awaits; upstream's final boundary is a
+      // synchronous closure that cannot return a blocked result, so recheck just before it.
+      const wrapperGateBoundary = resolveWrapperGateToolDecision({
+        config: ctx?.config,
+        sessionKey: ctx?.sessionKey,
+        now: Date.now(),
+        toolName: normalizedToolName,
+      });
+      if (wrapperGateBoundary.action === "refuse") {
+        return await blockToolCall({
+          reason: wrapperGateBoundary.reason,
+          deniedReason: "wrapper-gate-deadline",
+          toolParams: executeParams,
+        });
       }
       const eventBase = buildEventBase(executeParams);
       const recordProgress = captureDiagnosticToolProgress(eventBase);
@@ -554,7 +552,16 @@ export function wrapToolWithBeforeToolCallHook(
           );
         }
         // Keep loop hashes and diagnostics on the raw outcome; this note is model feedback only.
-        return outcome.loopWarning ? appendToolLoopWarning(result, outcome.loopWarning) : result;
+        const withLoopWarning = outcome.loopWarning
+          ? appendToolLoopWarning(result, outcome.loopWarning)
+          : result;
+        if (wrapperGateEntry.action === "warn" && !wrapperGateEntry.commit(Date.now())) {
+          // W2: a concurrent warning-phase call already claimed the one-per-window warning.
+          return withLoopWarning;
+        }
+        return wrapperGateWarningNote
+          ? appendWrapperGateWarning(withLoopWarning, wrapperGateWarningNote)
+          : withLoopWarning;
       } catch (err) {
         if (err instanceof InternalToolLoopBlocked) {
           recordPreExecutionDisposition(executeParams, "blocked", "tool-loop", "tool-loop");
