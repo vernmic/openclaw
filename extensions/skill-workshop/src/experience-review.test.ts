@@ -80,6 +80,22 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+it("requests a visible review session only when the plugin config enables it", async () => {
+  await runSkillExperienceReview(candidate);
+  expect(forks[0]).not.toHaveProperty("recordVisibleSession");
+
+  config = {
+    plugins: {
+      entries: { "skill-workshop": { config: { experienceReview: { visibleSessions: true } } } },
+    },
+  };
+  await runSkillExperienceReview(candidate);
+  expect(forks[1]?.recordVisibleSession).toEqual({
+    category: "workshop-review",
+    label: "Skill review",
+  });
+});
+
 it("forks the finished turn with only skill_workshop and the agent's run timeout", async () => {
   await runSkillExperienceReview(candidate);
   expect(forks).toHaveLength(1);

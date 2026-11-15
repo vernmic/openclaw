@@ -70,6 +70,10 @@ export async function runSkillExperienceReview(
         ...candidate,
         propose: resolveSkillWorkshopConfig(config).autonomous.mode === "propose",
       }),
+      // Default off: an operator who wants the review in the session list opts in.
+      ...(resolveSkillWorkshopConfig(config).experienceReview.visibleSessions
+        ? { recordVisibleSession: { category: "workshop-review", label: "Skill review" } }
+        : {}),
       tools: REVIEW_TOOLS,
       runId,
       // The fork's 120 s is a default; a review gets the agent's own run timeout.

@@ -288,11 +288,12 @@ one and should be merged.
 }
 ```
 
-| Setting                                                           | Default  | Effect                                                                                                                                                                            |
-| ----------------------------------------------------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `plugins.entries.skill-workshop.config.autonomous.mode`           | `"auto"` | `"auto"` enables the background review, unused-skill cleanup, and the [skill diet](#skill-diet). `"propose"` makes the review save [drafts](#drafts). `"off"` disables all three. |
-| `plugins.entries.skill-workshop.config.autonomous.channelNotices` | `false`  | Also post background review notices to channel conversations, except Slack.                                                                                                       |
-| `plugins.entries.skill-workshop.config.maxSkillBytes`             | `40000`  | Maximum `SKILL.md` size in bytes (1024-200000).                                                                                                                                   |
+| Setting                                                                  | Default  | Effect                                                                                                                                                                            |
+| ------------------------------------------------------------------------ | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `plugins.entries.skill-workshop.config.autonomous.mode`                  | `"auto"` | `"auto"` enables the background review, unused-skill cleanup, and the [skill diet](#skill-diet). `"propose"` makes the review save [drafts](#drafts). `"off"` disables all three. |
+| `plugins.entries.skill-workshop.config.autonomous.channelNotices`        | `false`  | Also post background review notices to channel conversations, except Slack.                                                                                                       |
+| `plugins.entries.skill-workshop.config.experienceReview.visibleSessions` | `false`  | Also record each settled review as an ordinary, listable session so its prompt, tool calls and results can be opened and audited.                                                 |
+| `plugins.entries.skill-workshop.config.maxSkillBytes`                    | `40000`  | Maximum `SKILL.md` size in bytes (1024-200000).                                                                                                                                   |
 
 ```bash
 openclaw config set plugins.entries.skill-workshop.config.autonomous.mode off

@@ -46,6 +46,7 @@ import {
   type SessionForkRequester,
 } from "./session-fork-requester.js";
 import { assertSessionForkRunSucceeded } from "./session-fork-result.js";
+import type { SessionMessageEntry } from "./sessions/session-manager-types.js";
 import { SessionManager } from "./sessions/session-manager.js";
 
 /**
@@ -215,8 +216,24 @@ function sessionConversationFacts(entry: SessionEntry | undefined) {
  * foreground work, or the source session changing under the fork. Anything else is a failure.
  */
 type SessionForkOutcome =
-  | { ok: true; result: EmbeddedAgentRunResult }
+  | { ok: true; result: EmbeddedAgentRunResult; turns?: readonly ForkTurnMessage[] }
   | { ok: false; error: unknown; cancelled: boolean };
+
+/** One message of the fork's own conversation, as a visible-session record would store it. */
+type ForkTurnMessage = Parameters<SessionManager["appendMessageAsync"]>[0];
+
+/** The fork's own new turns: everything its bounded copy gained after the source context. */
+function collectForkTurnMessages(
+  sessionManager: Pick<SessionManager, "getEntries">,
+  baseline: ReadonlySet<string>,
+): ForkTurnMessage[] {
+  return sessionManager
+    .getEntries()
+    .filter(
+      (entry): entry is SessionMessageEntry => entry.type === "message" && !baseline.has(entry.id),
+    )
+    .map((entry) => structuredClone(entry.message) as ForkTurnMessage);
+}
 
 /**
  * Runs the fork, then the caller's settlement (for example, announcing what the fork's tools
@@ -235,9 +252,9 @@ export async function runSessionFork<T>(
     async () => {
       let outcome: SessionForkOutcome;
       try {
-        const result = await runSessionForkInner(params, abortSignal);
+        const { result, turns } = await runSessionForkInner(params, abortSignal);
         assertSessionForkRunSucceeded(result);
-        outcome = { ok: true, result };
+        outcome = { ok: true, result, ...(turns.length > 0 ? { turns } : {}) };
       } catch (error) {
         outcome = {
           ok: false,
@@ -452,6 +469,9 @@ async function runSessionForkInner(params: SessionForkRunParams, abortSignal: Ab
     yieldToForeground();
     runSignal.throwIfAborted();
     const { runEmbeddedAgent } = await import("./embedded-agent.js");
+    // The fork's own turns are what its bounded copy gains from here on; the anchored source
+    // context before this point belongs to the source session, not to the fork's record.
+    const baselineEntryIds = new Set(sessionManager.getEntries().map((entry) => entry.id));
     const result = await runEmbeddedAgent({
       agentId,
       agentDir,
@@ -524,7 +544,7 @@ async function runSessionForkInner(params: SessionForkRunParams, abortSignal: Ab
       model: params.model.model,
     });
     foreground.signal.throwIfAborted();
-    return result;
+    return { result, turns: collectForkTurnMessages(sessionManager, baselineEntryIds) };
   } finally {
     unsubscribe();
     preparedRunAdmission.close();

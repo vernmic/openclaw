@@ -83,6 +83,13 @@ export type SubagentForkedTurnParams<T> = {
   /** Full provider/model override; requires the same trust as `subagent.run` overrides. */
   provider?: string;
   model?: string;
+  /**
+   * Writes the fork's own new turns to a visible session `agent:<agentId>:<category>:<uuid>`
+   * once it settles, so an operator can open the work in the session list. The category is one
+   * session-key segment (lowercase letters, digits and dashes); the label defaults to the
+   * category. Absent means no record is written.
+   */
+  recordVisibleSession?: { category: string; label?: string };
   /** Caller-chosen id so tools' records can be found even when the run fails; unique per run. */
   runId?: string;
   /** Defaults to 120 seconds; a larger value runs longer (the agent timeout, for example). */
