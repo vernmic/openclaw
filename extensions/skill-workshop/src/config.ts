@@ -10,6 +10,10 @@ type SkillWorkshopConfig = {
     mode: SkillsWorkshopAutonomousMode;
     channelNotices: boolean;
   };
+  experienceReview: {
+    /** Record each settled review as a visible session the operator can open. */
+    visibleSessions: boolean;
+  };
   maxSkillBytes: number;
 };
 
@@ -24,11 +28,15 @@ function isMode(value: unknown): value is SkillsWorkshopAutonomousMode {
 export function resolveSkillWorkshopConfig(config?: OpenClawConfig): SkillWorkshopConfig {
   const raw = config?.plugins?.entries?.["skill-workshop"]?.config;
   const autonomous = isRecord(raw?.autonomous) ? raw.autonomous : undefined;
+  const experienceReview = isRecord(raw?.experienceReview) ? raw.experienceReview : undefined;
   const maxSkillBytes = typeof raw?.maxSkillBytes === "number" ? raw.maxSkillBytes : 40_000;
   return {
     autonomous: {
       mode: isMode(autonomous?.mode) ? autonomous.mode : "auto",
       channelNotices: autonomous?.channelNotices === true,
+    },
+    experienceReview: {
+      visibleSessions: experienceReview?.visibleSessions === true,
     },
     maxSkillBytes: Math.min(Math.max(maxSkillBytes, 1024), 200_000),
   };

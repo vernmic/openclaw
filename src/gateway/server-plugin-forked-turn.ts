@@ -14,6 +14,7 @@ import type { NormalizedUsage } from "../agents/usage.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { getAgentRunContext } from "../infra/agent-run-registry.js";
+import { recordPluginForkedTurnSessionIfRequested } from "../plugins/plugin-forked-turn-visible-session.js";
 import type { PluginRuntimeGatewayRequestScope } from "../plugins/runtime/gateway-request-scope.types.js";
 import type { RuntimePluginToolGrant } from "../plugins/runtime/tool-grant.js";
 import type {
@@ -137,6 +138,9 @@ export async function runPluginForkedTurn<T>(
           prompt: params.prompt,
           tools: [...(runtimePluginToolGrant?.toolNames ?? []), ...sessionTools],
           runtimePluginToolGrant,
+          ...(params.recordVisibleSession
+            ? { recordVisibleSession: params.recordVisibleSession }
+            : {}),
           ...(params.provider && params.model
             ? { override: { provider: params.provider, model: params.model } }
             : {}),
@@ -176,6 +180,7 @@ export async function forkPluginSession<T>(input: {
   prompt: string;
   tools: readonly string[];
   runtimePluginToolGrant?: RuntimePluginToolGrant;
+  recordVisibleSession?: { category: string; label?: string };
   override?: { provider: string; model: string };
   authorizeModelOverride?: (model: ModelRef, authProfileId?: string) => void;
   operatorAuthority: AdmittedRunOperatorAuthority | undefined;
@@ -303,6 +308,17 @@ export async function forkPluginSession<T>(input: {
       async (outcome) => {
         // A revoked plugin's settlement code never runs; the call rejects instead.
         assertCurrent();
+        // A requested visible record is written before settlement, inside the same detached
+        // admission, so a graceful restart waits for it; a write failure never fails the fork.
+        if (outcome.ok) {
+          await recordPluginForkedTurnSessionIfRequested({
+            record: input.recordVisibleSession,
+            config: cfg,
+            agentId,
+            workspaceDir: prepared.workspaceDir,
+            messages: outcome.turns,
+          });
+        }
         const base = { runId: input.runId, ...(admitted ? { source: admitted } : {}) };
         if (!outcome.ok) {
           return await input.onSettled(

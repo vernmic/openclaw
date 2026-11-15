@@ -381,6 +381,13 @@ runs that repair for you.
   learning sessions work in every mode.
 </ParamField>
 
+<ParamField path="plugins.entries.skill-workshop.config.experienceReview.visibleSessions" type="boolean" default="false">
+  When `true`, each settled background review is also copied into an ordinary,
+  listable session, so its prompt, tool calls and results can be opened and
+  audited. The review itself still runs hidden. When `false`, the review leaves
+  no session behind.
+</ParamField>
+
 <ParamField path="plugins.entries.skill-workshop.config.autonomous.channelNotices" type="boolean" default="false">
   When `true`, background review notices are posted to channel conversations
   (except Slack) with an **Undo** button; the Control UI shows that message as
