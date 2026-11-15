@@ -78,6 +78,11 @@ type SessionForkRunParams = {
   assertCallerCurrent?: () => void;
   /** The exact source generation the fork read, reported before the model runs. */
   onSourceAdmitted?: (entry: { sessionId: string; lifecycleRevision?: string | null }) => void;
+  /**
+   * Collect the fork's own new turns onto its outcome. Only a caller that will publish them
+   * (a requested visible session) sets this; without it the fork pays nothing for the record.
+   */
+  collectTurns?: boolean;
 };
 
 // A fork reads only a bounded suffix through the completed entry; it does not need to repay the
@@ -233,6 +238,21 @@ function collectForkTurnMessages(
       (entry): entry is SessionMessageEntry => entry.type === "message" && !baseline.has(entry.id),
     )
     .map((entry) => structuredClone(entry.message) as ForkTurnMessage);
+}
+
+/**
+ * The turns a fork puts on its outcome: none unless it was asked for a record and the caller's
+ * baseline was taken before the run. Exported for the fork's own tests.
+ */
+export function collectForkTurnsForRun(
+  params: Pick<SessionForkRunParams, "collectTurns">,
+  sessionManager: Pick<SessionManager, "getEntries">,
+  baseline: ReadonlySet<string> | undefined,
+): ForkTurnMessage[] {
+  if (params.collectTurns !== true || !baseline) {
+    return [];
+  }
+  return collectForkTurnMessages(sessionManager, baseline);
 }
 
 /**
@@ -470,8 +490,11 @@ async function runSessionForkInner(params: SessionForkRunParams, abortSignal: Ab
     runSignal.throwIfAborted();
     const { runEmbeddedAgent } = await import("./embedded-agent.js");
     // The fork's own turns are what its bounded copy gains from here on; the anchored source
-    // context before this point belongs to the source session, not to the fork's record.
-    const baselineEntryIds = new Set(sessionManager.getEntries().map((entry) => entry.id));
+    // context before this point belongs to the source session, not to the fork's record. A
+    // caller that will not publish them never pays for the snapshot.
+    const baselineEntryIds = params.collectTurns
+      ? new Set(sessionManager.getEntries().map((entry) => entry.id))
+      : undefined;
     const result = await runEmbeddedAgent({
       agentId,
       agentDir,
@@ -544,7 +567,7 @@ async function runSessionForkInner(params: SessionForkRunParams, abortSignal: Ab
       model: params.model.model,
     });
     foreground.signal.throwIfAborted();
-    return { result, turns: collectForkTurnMessages(sessionManager, baselineEntryIds) };
+    return { result, turns: collectForkTurnsForRun(params, sessionManager, baselineEntryIds) };
   } finally {
     unsubscribe();
     preparedRunAdmission.close();

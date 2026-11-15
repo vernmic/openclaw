@@ -9,7 +9,9 @@ import {
   type OpenClawTestState,
 } from "../test-utils/openclaw-test-state.js";
 import { assertSessionForkRunSucceeded } from "./session-fork-result.js";
-import { prepareSessionFork } from "./session-fork-run.js";
+import { collectForkTurnsForRun, prepareSessionFork } from "./session-fork-run.js";
+import type { SessionManager } from "./sessions/session-manager.js";
+import { makeAgentUserMessage } from "./test-helpers/agent-message-fixtures.js";
 
 let state: OpenClawTestState;
 const model = { provider: "openai", model: "gpt-test" };
@@ -39,6 +41,24 @@ async function groupSession() {
 
 const groupTools = (deny: string[]): OpenClawConfig => ({
   channels: { whatsapp: { groups: { team: { tools: { deny } } } } },
+});
+
+it("collects a fork's own turns only when its caller asks for them", () => {
+  const entries = [
+    { type: "message", id: "kept", message: makeAgentUserMessage({ content: "source" }) },
+    { type: "message", id: "new", message: makeAgentUserMessage({ content: "fork" }) },
+  ] as unknown as ReturnType<SessionManager["getEntries"]>;
+  const manager = { getEntries: () => entries };
+  const baseline = new Set(["kept"]);
+
+  // No flag, an explicit false, and no baseline each cost nothing and return nothing.
+  expect(collectForkTurnsForRun({}, manager, baseline)).toEqual([]);
+  expect(collectForkTurnsForRun({ collectTurns: false }, manager, baseline)).toEqual([]);
+  expect(collectForkTurnsForRun({ collectTurns: true }, manager, undefined)).toEqual([]);
+  // Asked for, with a baseline, the fork's own new entry is the only turn.
+  expect(collectForkTurnsForRun({ collectTurns: true }, manager, baseline)).toEqual([
+    expect.objectContaining({ role: "user", content: "fork" }),
+  ]);
 });
 
 it("admits a fork only when the source group's policy exposes every fork tool", async () => {
