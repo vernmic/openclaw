@@ -298,6 +298,8 @@ export async function forkPluginSession<T>(input: {
         ...(input.maxTokens !== undefined ? { maxTokens: input.maxTokens } : {}),
         abortSignal: input.abortSignal,
         assertCallerCurrent: assertCurrent,
+        // The fork pays for a turn snapshot only when this call will publish it.
+        collectTurns: input.recordVisibleSession !== undefined,
         onSourceAdmitted: (entry) => {
           admitted = {
             sessionId: entry.sessionId,
