@@ -57,6 +57,12 @@ import {
   isPrivateDirectoryAlreadyExists,
 } from "./local-repository-private-directory.js";
 import {
+  assertRetainedKeep,
+  lstatIfExists,
+  removePublishedSnapshotDirectoryIfOwned,
+  rotateRetainedSnapshots,
+} from "./local-repository-retention.js";
+import {
   copySnapshotArtifact,
   hashSnapshotArtifact,
   readSnapshotManifest,
@@ -384,57 +390,16 @@ class LocalSqliteSnapshotProvider {
 
   /** Rotate only after the native create owner has verified and committed its artifact. */
   async createRetained(database: SnapshotDatabaseRef, keep: number): Promise<SnapshotResult> {
-    if (!Number.isSafeInteger(keep) || keep < 1) {
-      throw new Error("SQLite snapshot retention must retain at least one restore point");
-    }
+    assertRetainedKeep(keep);
     const snapshot = await this.create(database);
-    const snapshots = await this.list();
-    // Retention belongs to one named source repository, never a mixed backup repository.
-    for (const candidate of snapshots) {
-      const current = candidate.manifest.database;
-      const expected = snapshot.manifest.database;
-      if (
-        current.role !== expected.role ||
-        current.basename !== expected.basename ||
-        (current.role === "agent" &&
-          (expected.role !== "agent" || current.agentId !== expected.agentId)) ||
-        (current.role === "generic" && (expected.role !== "generic" || current.id !== expected.id))
-      ) {
-        throw new Error("SQLite retained snapshot repository contains another database owner");
-      }
-    }
-    // Pin the newly certified point even if the wall clock moved backwards.
-    const previous = snapshots.filter((candidate) => candidate.ref.path !== snapshot.ref.path);
-    const repositoryIdentity = await fs.lstat(this.#repositoryPath);
-    const trustedRepository = await assertTrustedStagingRoot(
-      repositoryIdentity,
-      this.#repositoryPath,
-    );
-    for (const candidate of previous.slice(keep - 1)) {
-      await assertDirectoryIdentity(trustedRepository, repositoryIdentity);
-      const snapshotPath = await this.#resolveSnapshotDirectory(candidate.ref);
-      const directory = await pinDirectory(snapshotPath, { label: "Retained SQLite snapshot" });
-      try {
-        await assertSnapshotContents(snapshotPath);
-        const entries = new Map<string, Stats>();
-        for (const entry of [SNAPSHOT_SQLITE_FILENAME, SNAPSHOT_MANIFEST_FILENAME]) {
-          entries.set(entry, await fs.lstat(path.join(snapshotPath, entry)));
-        }
-        await directory.assertCurrent();
-        if (
-          !(await removePublishedSnapshotDirectoryIfOwned(
-            snapshotPath,
-            await fs.lstat(snapshotPath),
-            entries,
-          ))
-        ) {
-          throw new Error(`Retained SQLite snapshot changed during rotation: ${snapshotPath}`);
-        }
-      } finally {
-        await directory.close();
-      }
-    }
-    await syncDirectoryIfSupported(trustedRepository);
+    await rotateRetainedSnapshots({
+      snapshot,
+      snapshots: await this.list(),
+      keep,
+      repositoryPath: this.#repositoryPath,
+      resolveSnapshotDirectory: (ref) => this.#resolveSnapshotDirectory(ref),
+      assertSnapshotContents,
+    });
     return snapshot;
   }
 
@@ -1051,17 +1016,6 @@ function readPendingSnapshotIdentity(pendingPath: string): BigIntStats | undefin
   return identity;
 }
 
-async function lstatIfExists(pathname: string): Promise<BigIntStats | undefined> {
-  try {
-    return await fs.lstat(pathname, { bigint: true });
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return undefined;
-    }
-    throw error;
-  }
-}
-
 function lstatIfExistsSync(pathname: string): BigIntStats | undefined {
   try {
     return fsSync.lstatSync(pathname, { bigint: true });
@@ -1172,36 +1126,4 @@ export async function ensurePrivateSnapshotRepositoryRoot(rootPath: string): Pro
   return await assertTrustedStagingRoot(receipt.exactIdentity, rootPath);
 }
 
-async function removePublishedSnapshotDirectoryIfOwned(
-  directoryPath: string,
-  expectedIdentity: FileIdentityStat,
-  publishedEntries: ReadonlyMap<string, FileIdentityStat>,
-): Promise<boolean> {
-  const currentIdentity = await lstatIfExists(directoryPath);
-  if (
-    !currentIdentity ||
-    currentIdentity.isSymbolicLink() ||
-    !currentIdentity.isDirectory() ||
-    !sameFileIdentity(currentIdentity, expectedIdentity)
-  ) {
-    return false;
-  }
-  const entries = await fs.readdir(directoryPath, { withFileTypes: true });
-  for (const entry of entries) {
-    const expectedEntryIdentity = publishedEntries.get(entry.name);
-    if (!expectedEntryIdentity || entry.isSymbolicLink() || !entry.isFile()) {
-      continue;
-    }
-    const entryPath = path.join(directoryPath, entry.name);
-    const currentEntryIdentity = await fs.lstat(entryPath, { bigint: true });
-    if (sameFileIdentity(currentEntryIdentity, expectedEntryIdentity)) {
-      await fs.unlink(entryPath);
-    }
-  }
-  if ((await fs.readdir(directoryPath)).length > 0) {
-    return false;
-  }
-  await fs.rmdir(directoryPath);
-  return true;
-}
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
