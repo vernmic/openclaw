@@ -1,4 +1,4 @@
-import type { BigIntStats, Stats } from "node:fs";
+import type { BigIntStats } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { sameFileIdentity, type FileIdentityStat } from "@openclaw/fs-safe/advanced";
@@ -95,7 +95,9 @@ export async function rotateRetainedSnapshots(params: {
   }
   // Pin the newly certified point even if the wall clock moved backwards.
   const previous = snapshots.filter((candidate) => candidate.ref.path !== snapshot.ref.path);
-  const repositoryIdentity = await fs.lstat(params.repositoryPath);
+  // Identities are bigint: Windows file IDs exceed 2^53, and a rounded Number ino
+  // never matches, which failed every rotation as "changed during operation".
+  const repositoryIdentity = await fs.lstat(params.repositoryPath, { bigint: true });
   const trustedRepository = await assertTrustedStagingRoot(
     repositoryIdentity,
     params.repositoryPath,
@@ -106,15 +108,15 @@ export async function rotateRetainedSnapshots(params: {
     const directory = await pinDirectory(snapshotPath, { label: "Retained SQLite snapshot" });
     try {
       await params.assertSnapshotContents(snapshotPath);
-      const entries = new Map<string, Stats>();
+      const entries = new Map<string, BigIntStats>();
       for (const entry of [SNAPSHOT_SQLITE_FILENAME, SNAPSHOT_MANIFEST_FILENAME]) {
-        entries.set(entry, await fs.lstat(path.join(snapshotPath, entry)));
+        entries.set(entry, await fs.lstat(path.join(snapshotPath, entry), { bigint: true }));
       }
       await directory.assertCurrent();
       if (
         !(await removePublishedSnapshotDirectoryIfOwned(
           snapshotPath,
-          await fs.lstat(snapshotPath),
+          await fs.lstat(snapshotPath, { bigint: true }),
           entries,
         ))
       ) {
