@@ -22,3 +22,14 @@ it("gives harness hooks the host's currency check for their memory audience", as
     );
   });
 });
+
+it("passes the context-engine turn identity through to plugin hooks", () => {
+  const turn = { logicalTurnId: "logical-turn", enginePluginId: "engine-plugin" };
+  expect(
+    buildAgentHookContext({ sessionKey: "agent:main:main", contextEngineTurn: turn })
+      .contextEngineTurn,
+  ).toEqual(turn);
+  expect(buildAgentHookContext({ sessionKey: "agent:main:main" })).not.toHaveProperty(
+    "contextEngineTurn",
+  );
+});
