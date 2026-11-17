@@ -54,6 +54,7 @@ export function buildAgentHookContext(params: AgentHarnessHookContext): PluginHo
     ...(params.sessionKey ? { sessionKey: params.sessionKey } : {}),
     ...(params.sessionId ? { sessionId: params.sessionId } : {}),
     ...memoryAudienceFields,
+    ...(params.contextEngineTurn ? { contextEngineTurn: params.contextEngineTurn } : {}),
     ...(params.sandboxed !== undefined ? { sandboxed: params.sandboxed } : {}),
     ...(params.workspaceDir ? { workspaceDir: params.workspaceDir } : {}),
     ...(params.modelProviderId ? { modelProviderId: params.modelProviderId } : {}),
