@@ -635,11 +635,8 @@ export class Agent {
 
     const signal = this.activeRun?.abortController.signal;
     if (!signal) {
-      // Stale/racy events are not a model verdict. Warn and discard them instead of
-      // taking down the whole gateway process for one listener outside its run.
-      console.warn(
-        `Agent listener invoked outside active run, ignoring stale event: ${event.type}`,
-      );
+      // A late event from a run that already ended has no listener to serve.
+      // Discard it; throwing here escapes the listener path and can take down the host.
       return;
     }
     for (const listener of this.listeners) {
