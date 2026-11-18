@@ -1,3 +1,4 @@
+import { stableJsonValue } from "@openclaw/normalization-core";
 import { hashTextSha256 } from "./hash.js";
 import type { SandboxBrowserConfig, SandboxDockerConfig, SandboxWorkspaceAccess } from "./types.js";
 
@@ -34,28 +35,29 @@ type SandboxBrowserHashInput = SandboxHashInput & {
   securityEpoch: string;
 };
 
-function normalizeForHash(value: unknown): unknown {
+/** Caller-side tweak over the shared stable clone: the sandbox hash drops undefined array entries. */
+function dropUndefinedArrayEntries(value: unknown): unknown {
   if (Array.isArray(value)) {
-    return value.map(normalizeForHash).filter((item): item is unknown => item !== undefined);
+    return value
+      .filter((entry): entry is unknown => entry !== undefined)
+      .map(dropUndefinedArrayEntries);
   }
   if (value && typeof value === "object") {
-    // Sort object keys recursively so JSON serialization is deterministic.
-    const entries = Object.entries(value).toSorted(([a], [b]) => a.localeCompare(b));
-    const normalized: Record<string, unknown> = {};
-    for (const [key, entryValue] of entries) {
-      const next = normalizeForHash(entryValue);
-      if (next !== undefined) {
-        normalized[key] = next;
-      }
-    }
-    return normalized;
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, entry]) => [
+        key,
+        dropUndefinedArrayEntries(entry),
+      ]),
+    );
   }
   return value;
 }
 
 /** Computes the sandbox container config hash. */
 export function computeSandboxConfigHash(input: SandboxHashInput): string {
-  return hashTextSha256(JSON.stringify(normalizeForHash(input)));
+  return hashTextSha256(
+    JSON.stringify(dropUndefinedArrayEntries(stableJsonValue(input, { keyOrder: "locale" }))),
+  );
 }
 
 /** Computes the browser-enabled sandbox container config hash. */
