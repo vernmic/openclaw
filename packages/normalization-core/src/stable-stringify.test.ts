@@ -1,6 +1,41 @@
 import { expect, it } from "vitest";
 import { sha256Hex, sha256StableValue } from "./node-crypto.js";
-import { stableStringify, writeStableStringify } from "./stable-stringify.js";
+import { stableJsonValue, stableStringify, writeStableStringify } from "./stable-stringify.js";
+
+it("stableJsonValue sorts keys at every level and keeps JSON stringify semantics", () => {
+  const value = { b: [{ y: 1, x: 2 }, 3], a: "s", mode: undefined };
+  expect(JSON.stringify(stableJsonValue(value))).toBe('{"a":"s","b":[{"x":2,"y":1},3]}');
+});
+
+it("stableJsonValue preserves arrays, undefined entries and non-object values as-is", () => {
+  const value = { list: [undefined, 2], nested: { deep: { z: 1, a: 2 } }, n: null, t: true };
+  const clone = stableJsonValue(value) as Record<string, unknown>;
+  expect(clone.list).toEqual([undefined, 2]);
+  expect(clone.nested).toEqual({ deep: { a: 2, z: 1 } });
+  expect(stableJsonValue(null)).toBe(null);
+  expect(stableJsonValue(undefined)).toBe(undefined);
+  expect(stableJsonValue(42)).toBe(42);
+});
+
+it("stableJsonValue matches a key-sorting JSON.stringify replacer byte for byte", () => {
+  const value = { b: [{ y: 1, x: 2 }, 3], a: "s", n: null, t: true };
+  const replacer = JSON.stringify(value, (_key, item: unknown) =>
+    item && typeof item === "object" && !Array.isArray(item)
+      ? Object.fromEntries(
+          Object.entries(item).toSorted(([a], [c]) => (a < c ? -1 : a > c ? 1 : 0)),
+        )
+      : item,
+  );
+  expect(JSON.stringify(stableJsonValue(value))).toBe(replacer);
+});
+
+it("stableJsonValue keyOrder locale sorts with localeCompare and no locale argument", () => {
+  const value = { b: 1, a: 2, A: 3 };
+  const clone = stableJsonValue(value, { keyOrder: "locale" }) as Record<string, unknown>;
+  expect(Object.keys(clone)).toEqual(
+    ["a", "A", "b"].sort((left, right) => left.localeCompare(right)),
+  );
+});
 
 const sanitizeSurrogates = (text: string) =>
   text.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "");
