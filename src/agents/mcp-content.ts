@@ -1,5 +1,5 @@
 import type { GetPromptResult } from "@modelcontextprotocol/client";
-import { stableStringify } from "@openclaw/normalization-core";
+import { stableJsonValue } from "@openclaw/normalization-core";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { createMcpStructuredContentMirrorMatcher } from "./mcp-structured-mirror.js";
 import type { AgentToolResult } from "./runtime/index.js";
@@ -112,7 +112,10 @@ function projectMcpCallToolResultContent(
       const isStructuredMirror = createMcpStructuredContentMirrorMatcher(structuredContent);
       // Compact, key-sorted JSON: deterministic for prompt caching and loop digests, and
       // indentation would only add tokens the model and the Tool Search envelope pay for.
-      const structuredJson = JSON.stringify(JSON.parse(stableStringify(structuredContent)));
+      // The stable clone sorts keys and JSON.stringify drops `undefined` members
+      // (#199909): stableStringify keeps them, they are not JSON, and parsing its
+      // output would throw on them.
+      const structuredJson = JSON.stringify(stableJsonValue(structuredContent));
       const structuredText = `structuredContent:\n${structuredJson}`;
       return {
         content: [
