@@ -79,6 +79,17 @@ describe("projectMcpCallToolResult", () => {
     ]);
   });
 
+  it("projects structured content carrying undefined members instead of throwing", () => {
+    const result = projectMcpCallToolResult({
+      content: [],
+      structuredContent: { answer: 42, mode: undefined },
+    });
+    // stableStringify keeps `undefined` members and its output is not JSON; without
+    // the JSON round trip first, this projection threw before the model call.
+    expect(result.content).toEqual([{ type: "text", text: 'structuredContent:\n{"answer":42}' }]);
+    expect(result.details.structuredContent).toEqual({ answer: 42 });
+  });
+
   it.each([
     ["the value of a multi-key result", { items: [1, 2], next: null }, "[1,2]"],
     ["text too deeply nested to compare", { items: [] }, `${"[".repeat(1e5)}${"]".repeat(1e5)}`],
