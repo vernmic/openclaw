@@ -1,3 +1,4 @@
+import { stableJsonValue } from "@openclaw/normalization-core";
 import type { GatewayReadSharing } from "./descriptor.js";
 
 type ShareKey = GatewayReadSharing["shareKey"];
@@ -16,8 +17,9 @@ export function operatorReadShareKey(...[caller, params]: Parameters<ShareKey>):
   ) {
     return null;
   }
+  // In-memory read-share key only: key order just needs to be deterministic.
   return JSON.stringify(
-    [
+    stableJsonValue([
       client.authenticatedUserProfile.profileId,
       client.authenticatedUserId,
       client.internal?.operatorRoleActor,
@@ -26,12 +28,7 @@ export function operatorReadShareKey(...[caller, params]: Parameters<ShareKey>):
       client.connect.client.id,
       client.connect.client.mode,
       params,
-    ],
-    (_key, value: unknown) =>
-      value && typeof value === "object" && !Array.isArray(value)
-        ? // oxlint-disable-next-line unicorn/no-array-sort -- Object.entries creates a private array.
-          Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)))
-        : value,
+    ]),
   );
 }
 
