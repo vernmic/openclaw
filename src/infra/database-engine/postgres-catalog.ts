@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { stableJsonValue } from "@openclaw/normalization-core";
 
 export type PostgresCatalogFact = { table: string; kind: string; value: unknown };
 type PostgresCatalogSource = {
@@ -64,11 +65,9 @@ export function expectedPostgresCatalog(data: PostgresCatalogSource): PostgresCa
 }
 
 function canonical(value: unknown): string {
-  return JSON.stringify(value, (_key, item: unknown) =>
-    item !== null && typeof item === "object" && !Array.isArray(item)
-      ? Object.fromEntries(Object.entries(item).toSorted(([a], [b]) => a.localeCompare(b, "en")))
-      : item,
-  );
+  // Both sides of the comparison below pass through this one function, so the
+  // locale argument (previously "en") cannot change any result.
+  return JSON.stringify(stableJsonValue(value, { keyOrder: "locale" }));
 }
 
 export function assertPostgresCatalog(
