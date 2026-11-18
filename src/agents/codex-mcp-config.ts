@@ -4,6 +4,7 @@
  * compatible with Codex's MCP config shape.
  */
 import crypto from "node:crypto";
+import { stableJsonValue } from "@openclaw/normalization-core";
 import { clampPositiveTimerTimeoutMs } from "@openclaw/normalization-core/number-coercion";
 import { normalizeOptionalLowercaseString } from "@openclaw/normalization-core/string-coerce";
 import { normalizeTrimmedStringList } from "@openclaw/normalization-core/string-normalization";
@@ -214,21 +215,9 @@ function selectCodexBundleMcpConfig(
   };
 }
 
-function stableJsonValue(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.map(stableJsonValue);
-  }
-  if (!value || typeof value !== "object") {
-    return value;
-  }
-  return Object.fromEntries(
-    Object.entries(value as Record<string, unknown>)
-      .toSorted(([left], [right]) => left.localeCompare(right))
-      .map(([key, child]) => [key, stableJsonValue(child)]),
-  );
-}
-
 function fingerprintCodexMcpServersConfig(config: CodexMcpServersConfig): string {
+  // The shared stable clone replaces this module's local one; fingerprints are
+  // computed and compared within one process, never persisted.
   return crypto
     .createHash("sha256")
     .update(JSON.stringify(stableJsonValue(config)))
