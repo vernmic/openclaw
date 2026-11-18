@@ -1,4 +1,5 @@
 import { hash } from "node:crypto";
+import { stableJsonValue } from "@openclaw/normalization-core";
 import { memoizeFrozenPlainDataProjection } from "../shared/immutable-data.js";
 
 export type SessionRowDeltaFields = {
@@ -17,17 +18,6 @@ type SessionRowDelta = {
 
 const preparedRows = new WeakMap<object, SessionRowDeltaFields>();
 const publicationSamples = new WeakMap<object, WeakRef<Record<string, unknown>>>();
-
-/** Keep JSON's omission/null semantics while ignoring nested object key order. */
-function canonicalJson(value: unknown): string | undefined {
-  return JSON.stringify(value, (_key, item: unknown) =>
-    item && typeof item === "object" && !Array.isArray(item)
-      ? Object.fromEntries(
-          Object.entries(item).toSorted(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
-        )
-      : item,
-  );
-}
 
 function hashJson(encoded: string | undefined): bigint | undefined {
   if (encoded === undefined) {
@@ -63,7 +53,8 @@ function hashJson(encoded: string | undefined): bigint | undefined {
 
 // Frozen field identities survive row clock/revision changes; retain only their hashes.
 const fingerprintObject = memoizeFrozenPlainDataProjection((value: object) =>
-  hashJson(canonicalJson(value)),
+  // Keep JSON's omission/null semantics while ignoring nested object key order.
+  hashJson(JSON.stringify(stableJsonValue(value))),
 );
 
 /** Presented row identity is immutable; fingerprints retain no row objects or text. */
