@@ -12,6 +12,20 @@ import {
 } from "./codex-mcp-config.js";
 import { createMcpProofPluginRegistry } from "./mcp-connection-resolver.test-fixtures.js";
 
+it("fingerprint is insertion-order independent and applies toJSON like JSON.stringify", async () => {
+  const withToJson = {
+    env: { token: { toJSON: () => "secret" } as unknown as string },
+  };
+  const plainEquivalent = { env: { token: "secret" } };
+  const first = await load({
+    cfg: configured({ proof: { type: "stdio", command: "run", ...withToJson } as never }),
+  });
+  const second = await load({
+    cfg: configured({ proof: { ...plainEquivalent, type: "stdio", command: "run" } as never }),
+  });
+  expect(first.fingerprint).toBe(second.fingerprint);
+});
+
 const mocks = vi.hoisted(() => ({
   bundleMcp: { config: { mcpServers: {} }, diagnostics: [] },
 }));
