@@ -17,6 +17,34 @@ export function stableStringify(
   return stringifyStableValue(value, new WeakSet(), normalizeString);
 }
 
+type StableKeyOrder = "code-unit" | "locale";
+
+/**
+ * Recursively clones a value with object keys sorted at every level (#199909), so
+ * `JSON.stringify` of the result is deterministic canonical JSON: member order cannot
+ * leak key insertion order, and JSON's own semantics still drop `undefined` members at
+ * stringify time. Callers tweak the returned value for one-off output rules themselves
+ * (for example dropping undefined array entries) rather than growing helper options.
+ */
+export function stableJsonValue(value: unknown, options?: { keyOrder?: StableKeyOrder }): unknown {
+  if (Array.isArray(value)) {
+    return value.map((entry) => stableJsonValue(entry, options));
+  }
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const compare =
+      options?.keyOrder === "locale"
+        ? (left: string, right: string) => left.localeCompare(right)
+        : (left: string, right: string) => (left < right ? -1 : left > right ? 1 : 0);
+    return Object.fromEntries(
+      Object.entries(record)
+        .toSorted(([left], [right]) => compare(left, right))
+        .map(([key, entry]) => [key, stableJsonValue(entry, options)]),
+    );
+  }
+  return value;
+}
+
 /** Writes the same deterministic text without retaining completed container strings. */
 export function writeStableStringify(
   value: unknown,
