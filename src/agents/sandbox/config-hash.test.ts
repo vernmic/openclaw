@@ -1,5 +1,46 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { computeSandboxBrowserConfigHash, computeSandboxConfigHash } from "./config-hash.js";
+
+// The deleted local normalizer, reproduced verbatim: the shared stableJsonValue plus the
+// caller-side undefined-array-entry drop must stay byte-equal with it so existing
+// container hashes (persisted reuse decisions) never change.
+function legacyNormalizeForHash(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(legacyNormalizeForHash).filter((item): item is unknown => item !== undefined);
+  }
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value).toSorted(([a], [b]) => a.localeCompare(b));
+    const normalized: Record<string, unknown> = {};
+    for (const [key, entryValue] of entries) {
+      const next = legacyNormalizeForHash(entryValue);
+      if (next !== undefined) {
+        normalized[key] = next;
+      }
+    }
+    return normalized;
+  }
+  return value;
+}
+
+it.each(["plain", "browser"])(
+  "computeSandboxConfigHash stays byte-equal with the deleted normalizer (%s)",
+  (kind) => {
+    const input = kind === "browser" ? createBrowserHashInput() : createHashInput();
+    // Fold in undefined members and undefined array entries alongside mixed-case keys.
+    const withUndefined = {
+      ...input,
+      Zebra: undefined,
+      apple: 1,
+      managedMounts: ["/a", undefined, "/b"],
+    };
+    const legacy = JSON.stringify(legacyNormalizeForHash(withUndefined));
+    // The hash is sha256 over exactly those legacy bytes.
+    expect(computeSandboxConfigHash(withUndefined)).toBe(
+      createHash("sha256").update(legacy).digest("hex"),
+    );
+  },
+);
 import { SANDBOX_DOCKER_CREATE_ARGS_EPOCH } from "./constants.js";
 import type { SandboxDockerConfig } from "./types.js";
 import { SANDBOX_MOUNT_FORMAT_VERSION } from "./workspace-mounts.js";
