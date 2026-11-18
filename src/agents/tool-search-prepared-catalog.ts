@@ -1,5 +1,5 @@
 import { getPublishedRuntimeToolInputSchema } from "@openclaw/ai/internal/tool-schema";
-import { stableStringify } from "@openclaw/normalization-core";
+import { stableJsonValue } from "@openclaw/normalization-core";
 import { sha256Hex } from "@openclaw/normalization-core/node-crypto";
 import { freezeTrustedJsonSnapshot } from "../shared/immutable-data.js";
 import type { ToolSearchCatalogEntry } from "./tool-search-types.js";
@@ -63,7 +63,7 @@ export function prepareToolSearchCatalogDescriptors(entries: readonly ToolSearch
         descriptor.description,
         descriptor.directVisible === true,
         descriptor.requiresExactId === true,
-        descriptor.mcp ? stableStringify(descriptor.mcp) : undefined,
+        descriptor.mcp ? JSON.stringify(stableJsonValue(descriptor.mcp)) : undefined,
       ] as const,
       parameters: schemaJson(parameters),
       outputSchema: schemaJson(outputSchema),
@@ -112,11 +112,14 @@ export function prepareToolSearchCatalogDescriptors(entries: readonly ToolSearch
           ...descriptor,
           parameters: snapshotSchema(descriptor.parameters, encoded[index]!.parameters?.json),
           outputSchema: snapshotSchema(descriptor.outputSchema, encoded[index]!.outputSchema?.json),
-          // The key's stableStringify keeps `undefined` members, which are not JSON;
-          // snapshot MCP metadata through JSON, which drops them.
+          // The key's stable JSON drops `undefined` members (which stableStringify
+          // keeps and which are not JSON); decode the snapshot from those same bytes,
+          // so one encoding drives comparison and snapshot alike.
           ...(descriptor.mcp
-            ? // oxlint-disable-next-line unicorn/prefer-structured-clone -- JSON encoding must omit undefined; structuredClone preserves those members.
-              { mcp: freezeTrustedJsonSnapshot(JSON.parse(JSON.stringify(descriptor.mcp))) }
+            ? // SAFETY: descriptor[8] is the key's stable JSON string for this mcp.
+              {
+                mcp: freezeTrustedJsonSnapshot(JSON.parse(encoded[index]!.descriptor[8] as string)),
+              }
             : {}),
         }),
       ),
