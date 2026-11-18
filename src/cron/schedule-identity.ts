@@ -1,5 +1,5 @@
 /** Builds stable identities for cron scheduling inputs. */
-import { stableStringify } from "@openclaw/normalization-core";
+import { stableJsonValue } from "@openclaw/normalization-core";
 import {
   asSafeIntegerInRange,
   parseStrictFiniteNumber,
@@ -132,7 +132,11 @@ export function tryCronScheduleIdentity(job: CronScheduleIdentityInput): string 
   return JSON.stringify({
     version: 2,
     enabled: typeof job.enabled === "boolean" ? job.enabled : true,
-    schedule: schedule.kind === "event" ? JSON.parse(stableStringify(schedule)) : schedule,
+    // An event schedule is the caller's raw record and may carry `undefined` members
+    // (mode); stableStringify keeps them and its output is then not JSON (#199909).
+    // The stable clone sorts keys and lets JSON.stringify drop them; records without
+    // `undefined` members keep their exact identity bytes.
+    schedule: schedule.kind === "event" ? stableJsonValue(schedule) : schedule,
     pacing,
     hasTrigger: job.trigger !== undefined && job.trigger !== null,
     ...(streamSandbox ? { streamSandbox } : {}),

@@ -2,6 +2,46 @@ import { describe, expect, it } from "vitest";
 import { cronSchedulingInputsEqual, tryCronScheduleIdentity } from "./schedule-identity.js";
 
 describe("tryCronScheduleIdentity", () => {
+  it("drops an undefined mode from an event schedule instead of throwing", () => {
+    const job = {
+      schedule: {
+        kind: "event",
+        source: "telegram.message",
+        options: { chatId: "42" },
+        mode: undefined,
+      },
+    };
+    const identity = tryCronScheduleIdentity(job);
+    expect(identity).toBeDefined();
+    expect(identity).not.toContain("undefined");
+    expect(JSON.parse(identity ?? "{}").schedule).toEqual({
+      kind: "event",
+      source: "telegram.message",
+      options: { chatId: "42" },
+    });
+    expect(cronSchedulingInputsEqual(job, structuredClone(job))).toBe(true);
+  });
+
+  it("keeps event schedule identity bytes unchanged for records without undefined", () => {
+    const identity =
+      '{"version":2,"enabled":true,"schedule":{"kind":"event","mode":"include","options":{"chatId":"42"},"source":"telegram.message"},"hasTrigger":false}';
+    const base = {
+      kind: "event",
+      source: "telegram.message",
+      options: { chatId: "42" },
+      mode: "include",
+    };
+    const reversed = {
+      mode: "include",
+      options: { chatId: "42" },
+      source: "telegram.message",
+      kind: "event",
+    };
+    expect(tryCronScheduleIdentity({ schedule: base })).toBe(identity);
+    // Stable ordering means member insertion order cannot change the identity.
+    expect(tryCronScheduleIdentity({ schedule: reversed })).toBe(identity);
+  });
+
   it("preserves meaningful whitespace in on-exit command identity", () => {
     const command = " printf %s hello\\ ";
     const makeJob = (text: string) => ({ schedule: { kind: "on-exit", command: text } });
