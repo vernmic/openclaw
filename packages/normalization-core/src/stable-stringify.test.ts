@@ -18,15 +18,45 @@ it("stableJsonValue preserves arrays, undefined entries and non-object values as
 });
 
 it("stableJsonValue matches a key-sorting JSON.stringify replacer byte for byte", () => {
-  const value = { b: [{ y: 1, x: 2 }, 3], a: "s", n: null, t: true };
-  const replacer = JSON.stringify(value, (_key, item: unknown) =>
-    item && typeof item === "object" && !Array.isArray(item)
-      ? Object.fromEntries(
-          Object.entries(item).toSorted(([a], [c]) => (a < c ? -1 : a > c ? 1 : 0)),
-        )
-      : item,
-  );
-  expect(JSON.stringify(stableJsonValue(value))).toBe(replacer);
+  const replacerCopy = (value: unknown) =>
+    JSON.stringify(value, (_key, item: unknown) =>
+      item && typeof item === "object" && !Array.isArray(item)
+        ? Object.fromEntries(
+            Object.entries(item).toSorted(([left], [right]) =>
+              left < right ? -1 : left > right ? 1 : 0,
+            ),
+          )
+        : item,
+    );
+  const cases = [
+    { b: [{ y: 1, x: 2 }, 3], a: "s", n: null, t: true },
+    { z: 1, meta: { when: new Date("2026-01-02T03:04:05.000Z"), name: "n" }, a: 2 },
+    { events: [new Date("2024-05-06T07:08:09.000Z"), 1], z: true },
+    { z: 1, payload: Buffer.from([1, 2, 255]), a: "s" },
+    {
+      toJSON(propertyKey: string) {
+        return propertyKey;
+      },
+    },
+    {
+      z: {
+        toJSON(propertyKey: string) {
+          return propertyKey;
+        },
+      },
+      items: [
+        {
+          toJSON(propertyKey: string) {
+            return propertyKey;
+          },
+        },
+      ],
+      a: 1,
+    },
+  ];
+  for (const value of cases) {
+    expect(JSON.stringify(stableJsonValue(value))).toBe(replacerCopy(value));
+  }
 });
 
 it("stableJsonValue keyOrder locale sorts with localeCompare and no locale argument", () => {
