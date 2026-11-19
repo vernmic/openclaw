@@ -180,6 +180,7 @@ const CORE_RELOAD_POLICIES: ReloadPolicy[] = [
       "gateway.nodes.allowSkills",
       "gateway.push.apns.relay",
       "gateway.terminal",
+      "gateway.readiness",
       "gateway.auth.rateLimit",
       "gateway.roles",
       "gateway.trustedProxies",

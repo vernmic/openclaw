@@ -10,6 +10,7 @@ import { loadOrCreateProcessDeviceIdentityAsync } from "../infra/device-identity
 import { readDevicePairingNodeSnapshot } from "../infra/device-pairing-store-readonly.js";
 import type { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import { loadGatewayTlsServerRuntime } from "../infra/tls/gateway.js";
+import { listStalledWorkerRequestKinds } from "../infra/worker-request-diagnostics.js";
 import type { createSubsystemLogger } from "../logging/subsystem.js";
 import { runtimeForLogger } from "../logging/subsystem.js";
 import type { createPluginRegistryOwner } from "../plugins/runtime.js";
@@ -498,6 +499,10 @@ export async function prepareGatewayKernelState(params: {
     getEventLoopHealth: readinessEventLoopHealth.snapshot,
     getStateDatabaseFailure: () =>
       openClawStateDatabaseCache.getOpenClawStateDatabaseRecordedFailure(resolveDatabasePath()),
+    getStalledWorkerKinds: () =>
+      getRuntimeConfig().gateway?.readiness?.failOnWorkerTimeouts === true
+        ? listStalledWorkerRequestKinds()
+        : [],
     getAgentDatabaseAdmissionRefusals: () => {
       const cfg = getRuntimeConfig();
       return listAgentDatabaseAdmissionRefusals().filter(

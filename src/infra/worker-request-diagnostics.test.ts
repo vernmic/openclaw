@@ -1,6 +1,11 @@
 import type { EventLoopUtilization } from "node:perf_hooks";
 import { afterEach, expect, it, vi } from "vitest";
-import { onWorkerRequestMetrics, trackWorkerRequest } from "./worker-request-diagnostics.js";
+import {
+  listStalledWorkerRequestKinds,
+  onWorkerRequestMetrics,
+  recordWorkerRequestTimeout,
+  trackWorkerRequest,
+} from "./worker-request-diagnostics.js";
 
 const { report } = vi.hoisted(() => ({ report: vi.fn() }));
 // mock-isolation: Keep the logging sink outside the worker timing fixture.
@@ -68,3 +73,19 @@ it.each([
     }
   },
 );
+
+it("reports a worker kind as stalled only while its last three deadlines fall within five minutes", () => {
+  let now = 1_000;
+  const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+  try {
+    recordWorkerRequestTimeout("diskBudget");
+    recordWorkerRequestTimeout("diskBudget");
+    expect(listStalledWorkerRequestKinds()).not.toContain("diskBudget");
+    recordWorkerRequestTimeout("diskBudget");
+    expect(listStalledWorkerRequestKinds()).toContain("diskBudget");
+    now += 5 * 60_000;
+    expect(listStalledWorkerRequestKinds()).not.toContain("diskBudget");
+  } finally {
+    clock.mockRestore();
+  }
+});

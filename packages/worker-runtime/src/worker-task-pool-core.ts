@@ -13,9 +13,9 @@ import {
 } from "./worker-task-capacity.js";
 import { captureWorkerTaskContext } from "./worker-task-context.js";
 import {
+  reportWorkerTaskTimeout,
   WorkerTaskError,
   workerTaskRetirementError,
-  workerTaskTimeoutError,
   workerTaskUnavailableError,
 } from "./worker-task-error.js";
 import {
@@ -617,7 +617,7 @@ export class WorkerTaskPoolCore<Input, Output> {
     if (task.done) {
       return;
     }
-    this.cancel(task, workerTaskTimeoutError(task.exchange, this.options.workerUrl));
+    this.cancel(task, reportWorkerTaskTimeout(this.host, task.exchange, this.options.workerUrl));
   };
 
   private cancel(task: Task<Input, Output>, error: Error): void {

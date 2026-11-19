@@ -131,6 +131,8 @@ export async function prepareGatewayRunShutdown(
       const pending = interrupted.inspectPending();
       return {
         effects: pending.effects,
+        sessionKey: pending.sessionKey ?? null,
+        runId: pending.runId ?? null,
         phase: pending.phase ?? "none",
         sourcePhase: pending.sourcePhase ?? "none",
         operationPhase: pending.operationPhase ?? "none",

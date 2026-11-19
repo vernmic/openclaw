@@ -29,7 +29,11 @@ import {
   createRetainedNativeWorker,
 } from "./worker-native-lifecycle.js";
 import { resolveWorkerPoolSize, type WorkerPoolClass } from "./worker-pool-sizing.js";
-import { captureWorkerStartObserver, trackWorkerRequest } from "./worker-request-diagnostics.js";
+import {
+  captureWorkerStartObserver,
+  recordWorkerRequestTimeout,
+  trackWorkerRequest,
+} from "./worker-request-diagnostics.js";
 import { workerRequestKind } from "./worker-request-kind.js";
 import { getWorkerComputeCapacity } from "./worker-task-capacity.js";
 import { liveWorkerTaskPools } from "./worker-task-pool-registry.js";
@@ -201,6 +205,9 @@ export function createWorkerTaskHost(
         admission.retiring = true;
       }
       markWorkerRetirement(worker, reason);
+    },
+    workerTaskTimedOut(url) {
+      recordWorkerRequestTimeout(workerRequestKind(url));
     },
     workerStopped(worker) {
       const admission = admissions.get(worker);
