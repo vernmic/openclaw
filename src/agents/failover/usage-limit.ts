@@ -8,7 +8,39 @@ import type { FailoverSignal } from "./signal.js";
 export type ProviderUsageLimitKind = "quota" | "rate_limit" | "other";
 
 const ZAI_PLAN_QUOTA_CODE = "1308";
+// Numeric or string `"code": 1308` in a Z.AI body. The body is not itself a token.
 const ZAI_PLAN_QUOTA_CODE_RE = /["']code["']\s*:\s*["']?1308\b/;
+
+/**
+ * Exact plan-quota tokens after trim, lowercasing, and hyphen-to-underscore.
+ * A longer string that only contains one of these is not a match, including details.
+ */
+const QUOTA_EXHAUSTION_TOKENS: ReadonlySet<string> = new Set([
+  // Z.AI plan windows (HTTP 429). 1302 is the short request rate limit and stays out,
+  // as do 1305 (overload) and 1313 (fair-use frequency).
+  // https://docs.z.ai/api-reference/api-code
+  ZAI_PLAN_QUOTA_CODE,
+  "1309",
+  "1310",
+  "1311",
+  "1314",
+  "1316",
+  "1317",
+  "1318",
+  "1319",
+  "1320",
+  "1321",
+  // OpenAI billing type. The four codes are the causes retrying will not clear.
+  // https://developers.openai.com/api/docs/guides/error-codes
+  "insufficient_quota",
+  "credit_balance_exhausted",
+  "organization_spend_limit_exceeded",
+  "project_spend_limit_exceeded",
+  "organization_usage_limit_exceeded",
+  // Google Interactions API: daily quota, not a per-minute QuotaFailure.
+  // https://aistudio.google.com/docs/api-errors
+  "quota_exceeded",
+]);
 
 function normalizeToken(raw: string | undefined): string | undefined {
   const trimmed = raw?.trim().toLowerCase();
@@ -18,20 +50,10 @@ function normalizeToken(raw: string | undefined): string | undefined {
   return trimmed.replaceAll("-", "_");
 }
 
-/** A short provider code or type that names an exhausted plan quota. */
-function isQuotaToken(raw: string | undefined): boolean {
+/** A whole code, type, or detail that is one plan-quota token. */
+function isExactQuotaToken(raw: string | undefined): boolean {
   const token = normalizeToken(raw);
-  if (!token) {
-    return false;
-  }
-  return token === ZAI_PLAN_QUOTA_CODE || token.includes("quota");
-}
-
-function isQuotaSignal(raw: string | undefined): boolean {
-  if (!raw) {
-    return false;
-  }
-  return isQuotaToken(raw) || ZAI_PLAN_QUOTA_CODE_RE.test(raw);
+  return token !== undefined && QUOTA_EXHAUSTION_TOKENS.has(token);
 }
 
 /**
@@ -43,11 +65,11 @@ export function classifyProviderUsageLimit(
 ): ProviderUsageLimitKind {
   const parsed = parseApiErrorInfo(signal.message);
   const quota =
-    isQuotaSignal(signal.code) ||
-    isQuotaSignal(signal.errorType) ||
-    isQuotaSignal(parsed?.code) ||
-    isQuotaSignal(parsed?.type) ||
-    signal.details?.some((detail) => isQuotaSignal(detail)) === true ||
+    isExactQuotaToken(signal.code) ||
+    isExactQuotaToken(signal.errorType) ||
+    isExactQuotaToken(parsed?.code) ||
+    isExactQuotaToken(parsed?.type) ||
+    signal.details?.some((detail) => isExactQuotaToken(detail)) === true ||
     ZAI_PLAN_QUOTA_CODE_RE.test(signal.message ?? "");
   if (quota) {
     return "quota";

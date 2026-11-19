@@ -34,9 +34,11 @@ available. No additional configuration is required.
 A provider error that says the plan quota is exhausted is not a short rate limit.
 Leave `agents.defaults.embeddedAgent.advanceOnQuotaExhausted` unset to keep the
 same-model backoff. Set it to `true` to advance immediately to the next configured
-fallback. The signals are Z.AI error code 1308, a quota error code such as
-`insufficient_quota` or `quota_exceeded`, and an `insufficient_quota` error type.
-Ordinary short rate limits still wait and retry the current model.
+fallback. The match is an exact code or type: Z.AI usage-limit codes such as
+1308, OpenAI billing codes such as `insufficient_quota`, and `quota_exceeded`.
+A longer string that only contains one of those words does not match. An
+ordinary short rate limit, including a Google per-minute QuotaFailure, still
+waits and retries the current model.
 
 Explicit organization tokens-per-minute (TPM) exhaustion is tracked per model.
 Embedded model calls and direct completions share a process-local admission gate:

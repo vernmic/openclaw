@@ -87,7 +87,7 @@ export const AGENT_FIELD_HELP: Record<string, string> = {
   "agents.defaults.embeddedAgent.cyberFailover.cooloffMs":
     "How long unavailable Daybreak access for the active model is skipped for the current session.",
   "agents.defaults.embeddedAgent.advanceOnQuotaExhausted":
-    "When true, an exhausted plan quota (Z.AI code 1308, a quota code, or an insufficient_quota error type) advances to the next configured fallback immediately. Leave unset to keep retrying the same model. Short rate limits still wait.",
+    "When true, an exhausted plan quota advances to the next configured fallback immediately. The match is an exact code or type, such as Z.AI 1308, insufficient_quota, or quota_exceeded. Leave unset to keep retrying the same model. Short rate limits still wait.",
   "agents.defaults.utilityModel":
     "Optional lower-cost model (provider/model, alias, or { primary, fallbacks }) for short internal tasks such as generated titles and progress narration. Utility fallbacks use the same retry, alias resolution, and model-selection policy as configured model fallbacks, independently of model.fallbacks. Unset derives the primary provider's declared small model when available (otherwise the primary model); set to an empty string to disable utility routing.",
   "agents.defaults.utilityModel.primary": "Primary utility model (provider/model or alias).",
