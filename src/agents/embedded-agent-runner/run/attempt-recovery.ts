@@ -15,7 +15,7 @@ import {
 } from "../../failover-error.js";
 import { failoverReasonFromClassification } from "../../failover/classification-rules.js";
 import { classifyFailoverSignal } from "../../failover/classify.js";
-import { getFailoverErrorCode } from "../../failover/error.js";
+import { getFailoverErrorCode, isFailoverError } from "../../failover/error.js";
 import { resolveRetryAfterMs } from "../../failover/retry-evidence.js";
 import type { FailoverReason } from "../../failover/signal.js";
 import { LiveSessionModelSwitchError } from "../../live-model-switch-error.js";
@@ -504,6 +504,10 @@ export async function recoverEmbeddedRunAttempt(input: {
       reason: recoveryReason,
       sameModelRetry: retryFailure?.kind === "reason" ? retryFailure.sameModelRetry : undefined,
       code: retryCode,
+      errorType: assistantSignal?.errorType,
+      status:
+        assistantSignal?.status ?? (isFailoverError(promptError) ? promptError.status : undefined),
+      details: assistantSignal?.details,
       message: retryMessage,
       retryAfterMs: promptError
         ? resolveRetryAfterMs(formatErrorMessage(promptError), Date.now(), promptError)

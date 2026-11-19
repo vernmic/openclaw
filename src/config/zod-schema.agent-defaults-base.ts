@@ -31,6 +31,8 @@ const EmbeddedAgentConfigSchema = z.strictObject({
       cooloffMs: z.number().int().positive().optional(),
     })
     .optional(),
+  /** When true, an exhausted plan quota advances to the next configured fallback. */
+  advanceOnQuotaExhausted: z.boolean().optional(),
 });
 
 export const SilentReplyPolicyConfigSchema = z.strictObject({

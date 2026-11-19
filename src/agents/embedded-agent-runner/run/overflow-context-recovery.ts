@@ -87,6 +87,7 @@ type EmbeddedRunOverflowRecoveryInput = EmbeddedRunCompactionRecoveryInput & {
     code?: string;
     message?: string;
     retryAfterMs?: number;
+    status?: number;
   }) => Promise<boolean>;
 };
 
@@ -471,6 +472,7 @@ async function recoverContextPressure(
           code: failure?.code,
           message: failure?.rawError ?? failedCompactionReason,
           retryAfterMs: resolveRetryAfterMs(failure?.rawError, Date.now()),
+          status: failure?.status,
         }))
       ) {
         input.assertRecoveryActive();

@@ -20,6 +20,10 @@ import {
 } from "../../failover/retry-evidence.js";
 import type { FailoverReason } from "../../failover/signal.js";
 import {
+  classifyProviderUsageLimit,
+  resolveAdvanceOnQuotaExhausted,
+} from "../../failover/usage-limit.js";
+import {
   renderRateLimitRecoveryStopped,
   renderRateLimitRetryExhaustion,
 } from "../../failover/user-copy.js";
@@ -313,6 +317,9 @@ export function createEmbeddedRunFailoverRetryController(input: {
       sameModelRetry?: boolean;
       message?: string;
       code?: string;
+      errorType?: string;
+      status?: number;
+      details?: readonly string[];
       retryAfterMs?: number;
       /** Saved retry.provider.maxRetryDelayMs; undefined or 0 disables the cap. */
       maxRetryDelayMs?: number;
@@ -334,6 +341,7 @@ export function createEmbeddedRunFailoverRetryController(input: {
           | "connection_retry_disabled"
           | "transient_retry_disabled"
           | "long_window_rate_limit"
+          | "quota_exhausted"
           | "retry_budget_exhausted"
           | "retry_delay_unavailable"
           | "retry_delay_exceeds_cap"
@@ -380,6 +388,24 @@ export function createEmbeddedRunFailoverRetryController(input: {
         (sharedTpmFallback || hasOrganizationTpmRateLimitEvidence(retry.message));
       if (rateLimit && hasLongWindowRateLimitEvidence(retry.message)) {
         recordDecision("rejected", "long_window_rate_limit");
+        return false;
+      }
+      // Plan-quota exhaustion is not a short rate limit. When the operator opts in,
+      // decline the same-model wait so the fallback chain can advance.
+      if (
+        rateLimit &&
+        resolveAdvanceOnQuotaExhausted(
+          preparedRuntime.snapshot().transportConfig ?? params.config,
+        ) &&
+        classifyProviderUsageLimit({
+          status: retry.status,
+          code: retry.code,
+          errorType: retry.errorType,
+          message: retry.message,
+          details: retry.details,
+        }) === "quota"
+      ) {
+        recordDecision("rejected", "quota_exhausted");
         return false;
       }
       if (retry.sameModelRetry === false) {

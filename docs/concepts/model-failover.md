@@ -31,6 +31,13 @@ is instructed to inspect interrupted actions before deciding whether to repeat
 them. A retry status shows the wait and attempt count. Cancellation remains
 available. No additional configuration is required.
 
+A provider error that says the plan quota is exhausted is not a short rate limit.
+Leave `agents.defaults.embeddedAgent.advanceOnQuotaExhausted` unset to keep the
+same-model backoff. Set it to `true` to advance immediately to the next configured
+fallback. The signals are Z.AI error code 1308, a quota error code such as
+`insufficient_quota` or `quota_exceeded`, and an `insufficient_quota` error type.
+Ordinary short rate limits still wait and retry the current model.
+
 Explicit organization tokens-per-minute (TPM) exhaustion is tracked per model.
 Embedded model calls and direct completions share a process-local admission gate:
 requests using the affected provider endpoint, account, and model wait for
