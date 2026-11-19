@@ -21,7 +21,12 @@ describe("classifyProviderUsageLimit", () => {
     expect(classifyProviderUsageLimit({ status: 429, errorType: "insufficient_quota" })).toBe(
       "quota",
     );
-    expect(classifyProviderUsageLimit({ status: 429, code: "quota_exceeded" })).toBe("quota");
+    expect(classifyProviderUsageLimit({ status: 429, code: "quota-exceeded" })).toBe("quota");
+    expect(classifyProviderUsageLimit({ status: 429, code: "1316" })).toBe("quota");
+    expect(classifyProviderUsageLimit({ status: 429, code: "credit_balance_exhausted" })).toBe(
+      "quota",
+    );
+    expect(classifyProviderUsageLimit({ status: 429, details: ["quota_exceeded"] })).toBe("quota");
   });
 
   it("keeps an ordinary 429 as a rate limit", () => {
@@ -35,6 +40,24 @@ describe("classifyProviderUsageLimit", () => {
     expect(classifyProviderUsageLimit({ status: 429, message: "429 Too many requests" })).toBe(
       "rate_limit",
     );
+    expect(classifyProviderUsageLimit({ status: 429, code: "monthly_quota_exceeded" })).toBe(
+      "rate_limit",
+    );
+  });
+
+  it("keeps a Google per-minute QuotaFailure 429 as a rate limit", () => {
+    expect(
+      classifyProviderUsageLimit({
+        status: 429,
+        code: "RESOURCE_EXHAUSTED",
+        message: "You exceeded your current quota, please check your plan and billing details.",
+        details: [
+          "type.googleapis.com/google.rpc.QuotaFailure",
+          "generativelanguage.googleapis.com/generate_content_requests_per_minute",
+          "You exceeded your current quota, please check your plan and billing details.",
+        ],
+      }),
+    ).toBe("rate_limit");
   });
 
   it("classifies an unrelated 4xx as other", () => {
