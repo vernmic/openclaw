@@ -87,6 +87,7 @@ export async function recoverEmbeddedRunOverflow(
       code?: string;
       message?: string;
       retryAfterMs?: number;
+      status?: number;
     }) => Promise<boolean>;
   },
 ): Promise<EmbeddedRunOverflowRecoveryOutcome> {
@@ -428,6 +429,7 @@ export async function recoverEmbeddedRunOverflow(
           code: failure?.code,
           message: failure?.rawError ?? failedCompactionReason,
           retryAfterMs: resolveRetryAfterMs(failure?.rawError, Date.now()),
+          status: failure?.status,
         }))
       ) {
         input.assertRecoveryActive();

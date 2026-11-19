@@ -20,6 +20,7 @@ export const AGENT_MODEL_FIELD_LABELS: Record<string, string> = {
   "agents.defaults.embeddedAgent.cyberFailover": "Cyber Policy Failover",
   "agents.defaults.embeddedAgent.cyberFailover.mode": "Cyber Policy Failover Mode",
   "agents.defaults.embeddedAgent.cyberFailover.cooloffMs": "Cyber Policy Failover Cooloff",
+  "agents.defaults.embeddedAgent.advanceOnQuotaExhausted": "Advance On Quota Exhausted",
   "agents.defaults.utilityModel": "Utility Model",
   "agents.defaults.utilityModel.primary": "Primary Utility Model",
   "agents.defaults.utilityModel.fallbacks": "Utility Model Fallbacks",
