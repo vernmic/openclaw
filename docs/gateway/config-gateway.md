@@ -380,4 +380,18 @@ The earlier `"restart"` and `"hot"` values are retired; [`openclaw doctor --fix`
 
 Reload debounce and in-flight operation deferral are no longer configurable and run behind built-in defaults. [`openclaw doctor --fix`](/cli/doctor) removes the retired `debounceMs` and `deferralTimeoutMs` keys from older config files.
 
+### `gateway.readiness`
+
+```json5
+{
+  gateway: {
+    readiness: {
+      failOnWorkerTimeouts: true, // default: false
+    },
+  },
+}
+```
+
+- `failOnWorkerTimeouts`: report the Gateway unready while one worker pool keeps hitting task deadlines, defined as three timeouts within five minutes. This catches session storage that has stalled, for example on a full disk, while chat requests fail with `Session access facts are unavailable`. `/readyz` and the `health` RPC's `coreReady` field then report a `worker-timeout:<kind>` failing entry, for example `worker-timeout:sqlite_read`. The entry clears on its own five minutes after the timeouts stop. Liveness (`/healthz`) is unchanged, so supervisors do not restart the Gateway on this signal alone. Default: `false`. Changes apply without restarting the Gateway.
+
 ---

@@ -12,6 +12,8 @@ import { createTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { resolveRuntimeWorkerArgv, resolveRuntimeWorkerUrl } from "./runtime-worker-url.js";
 import { getTrackedWorkerCpuSources, getTrackedWorkerPoolSnapshot } from "./worker-cpu.js";
+import { listStalledWorkerRequestKinds } from "./worker-request-diagnostics.js";
+import { workerRequestKind } from "./worker-request-kind.js";
 import { workerTaskPoolEntrypoints } from "./worker-task-pool-runtime.test-support.js";
 import { WorkerTaskPool } from "./worker-task-pool.js";
 import type { PoolFixtureInput, PoolFixtureResult } from "./worker-task-pool.test-support.js";
@@ -97,6 +99,23 @@ it("rotates after native exit while preserving queued order, deadlines, and CPU 
   expect(current.workers).not.toContain(oldSources.workers.at(-1));
   await pool.close();
   expect(getTrackedWorkerCpuSources().workers).toEqual(initial.workers);
+});
+
+it("reports a pool as stalled after repeated task deadlines", async () => {
+  const pool = createPool();
+  const counters = new Int32Array(new SharedArrayBuffer(8));
+  const active = pool.run({ label: "active", counters: counters.buffer, wait: true }, {});
+  await expect.poll(() => Atomics.load(counters, 0)).toBe(1);
+  try {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await expect(pool.run({ label: "expired" }, { timeoutMs: 1 })).rejects.toThrow("timed out");
+    }
+    expect(listStalledWorkerRequestKinds()).toContain(workerRequestKind(workerUrl));
+  } finally {
+    Atomics.store(counters, 1, 1);
+    Atomics.notify(counters, 1);
+    await active;
+  }
 });
 
 it.each(["options", "constructor"] as const)(

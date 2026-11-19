@@ -33,3 +33,13 @@ export function workerTaskTimeoutError(
   }
   return error;
 }
+
+/** Notify the host, then build the deadline error the pool cancels with. */
+export function reportWorkerTaskTimeout(
+  host: { workerTaskTimedOut?(url: URL): void },
+  exchange: { name: string; sent: boolean } | undefined,
+  workerUrl: URL,
+): WorkerTaskError {
+  host.workerTaskTimedOut?.(workerUrl);
+  return workerTaskTimeoutError(exchange, workerUrl);
+}
