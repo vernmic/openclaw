@@ -19,6 +19,8 @@ const entryCatalogs = new WeakMap<readonly ToolSearchCatalogEntry[], PreparedCat
 const MAX_CATALOGS = 32;
 const MAX_CATALOG_CHARS = 1024 * 1024;
 const MAX_PREPARED_CHARS = 4 * 1024 * 1024;
+/** mcp stable-JSON string in the prepared key tuple. Move this with that slot. */
+const PREPARED_CATALOG_DESCRIPTOR_MCP_INDEX = 8 as const;
 let preparedChars = 0;
 
 export function prepareToolSearchCatalogDescriptors(entries: readonly ToolSearchCatalogEntry[]): {
@@ -53,18 +55,21 @@ export function prepareToolSearchCatalogDescriptors(entries: readonly ToolSearch
       schemaChars += json?.length ?? 0;
       return { fingerprint: sha256Hex(json), json };
     };
+    const preparedDescriptor = [
+      descriptor.id,
+      descriptor.source,
+      descriptor.sourceName,
+      descriptor.name,
+      descriptor.label,
+      descriptor.description,
+      descriptor.directVisible === true,
+      descriptor.requiresExactId === true,
+      descriptor.mcp ? JSON.stringify(stableJsonValue(descriptor.mcp)) : undefined,
+    ] as const;
+    // Reordering the tuple fails here unless this slot is still the mcp JSON string.
+    void (preparedDescriptor[PREPARED_CATALOG_DESCRIPTOR_MCP_INDEX] satisfies string | undefined);
     return {
-      descriptor: [
-        descriptor.id,
-        descriptor.source,
-        descriptor.sourceName,
-        descriptor.name,
-        descriptor.label,
-        descriptor.description,
-        descriptor.directVisible === true,
-        descriptor.requiresExactId === true,
-        descriptor.mcp ? JSON.stringify(stableJsonValue(descriptor.mcp)) : undefined,
-      ] as const,
+      descriptor: preparedDescriptor,
       parameters: schemaJson(parameters),
       outputSchema: schemaJson(outputSchema),
     };
@@ -116,9 +121,13 @@ export function prepareToolSearchCatalogDescriptors(entries: readonly ToolSearch
           // keeps and which are not JSON); decode the snapshot from those same bytes,
           // so one encoding drives comparison and snapshot alike.
           ...(descriptor.mcp
-            ? // SAFETY: descriptor[8] is the key's stable JSON string for this mcp.
+            ? // SAFETY: this slot is the key's stable JSON string for this mcp.
               {
-                mcp: freezeTrustedJsonSnapshot(JSON.parse(encoded[index]!.descriptor[8] as string)),
+                mcp: freezeTrustedJsonSnapshot(
+                  JSON.parse(
+                    encoded[index]!.descriptor[PREPARED_CATALOG_DESCRIPTOR_MCP_INDEX] as string,
+                  ),
+                ),
               }
             : {}),
         }),
