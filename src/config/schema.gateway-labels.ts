@@ -49,6 +49,8 @@ export const GATEWAY_FIELD_LABELS: Record<string, string> = {
   "gateway.terminal.enabled": "Operator Terminal Enabled",
   "gateway.terminal.shell": "Operator Terminal Shell",
   "gateway.terminal.detachedSessionTimeoutSeconds": "Operator Terminal Detached Session Timeout",
+  "gateway.readiness": "Gateway Readiness",
+  "gateway.readiness.failOnWorkerTimeouts": "Fail Readiness on Worker Timeouts",
   "gateway.auth": "Gateway Auth",
   "gateway.auth.mode": "Gateway Auth Mode",
   "gateway.auth.allowTailscale": "Gateway Auth Allow Tailscale Identity",

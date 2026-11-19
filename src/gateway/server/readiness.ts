@@ -100,6 +100,7 @@ export function createReadinessChecker(
     >;
     getEventLoopHealth?: () => GatewayEventLoopHealth | undefined;
     getStateDatabaseFailure?: () => Error | undefined;
+    getStalledWorkerKinds?: () => readonly string[];
     getAgentDatabaseAdmissionRefusals?: () => readonly AgentDatabaseAdmissionRefusal[];
     getPluginReloadStatus?: () => GatewayPluginReloadStatus | undefined;
     isChatSendAvailable?: () => boolean;
@@ -135,6 +136,16 @@ export function createReadinessChecker(
         coreReady: false,
         failing: ["state-database"],
         stateDatabase: { reason: stateDatabaseFailure.message },
+        uptimeMs,
+      };
+    }
+    const stalledWorkers = deps.getStalledWorkerKinds?.();
+    if (stalledWorkers?.length) {
+      cachedState = null;
+      return {
+        ready: false,
+        coreReady: false,
+        failing: stalledWorkers.map((kind) => `worker-timeout:${kind}`),
         uptimeMs,
       };
     }

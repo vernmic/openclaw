@@ -88,6 +88,32 @@ export function withSqliteWorkerReservationObservation<T>(
   return runWithAsyncStore(reservations, observation, run);
 }
 
+// One stall expires every queued task at once, so a burst counts as a stall.
+const STALL_TIMEOUT_COUNT = 3;
+const STALL_WINDOW_MS = 5 * 60_000;
+
+const recentTimeouts = resolveGlobalSingleton(
+  Symbol.for("openclaw.workerRequestRecentTimeouts"),
+  () => new Map<WorkerRequestKind, number[]>(),
+);
+
+export function recordWorkerRequestTimeout(kind: WorkerRequestKind): void {
+  const times = recentTimeouts.get(kind) ?? [];
+  times.push(performance.now());
+  if (times.length > STALL_TIMEOUT_COUNT) {
+    times.shift();
+  }
+  recentTimeouts.set(kind, times);
+}
+
+/** Worker kinds whose last few tasks all reached their deadline within the stall window. */
+export function listStalledWorkerRequestKinds(): WorkerRequestKind[] {
+  const now = performance.now();
+  return [...recentTimeouts].flatMap(([kind, times]) =>
+    times.length === STALL_TIMEOUT_COUNT && now - times[0]! < STALL_WINDOW_MS ? [kind] : [],
+  );
+}
+
 const detailedTiming = isDiagnosticFlagEnabled("sqlite.worker-timing");
 
 const queued = resolveGlobalSingleton(

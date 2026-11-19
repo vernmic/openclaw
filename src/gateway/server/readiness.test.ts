@@ -133,6 +133,18 @@ describe("createReadinessChecker", () => {
     expect(manager.getRuntimeSnapshot).toHaveBeenCalledTimes(2);
   });
 
+  it("reports stalled worker pools as core-unready without caching the failure", () => {
+    let stalled: string[] = [];
+    const { readiness } = setup(undefined, { getStalledWorkerKinds: () => stalled });
+    expect(readiness()).toEqual(readySnapshot());
+
+    stalled = ["sqlite_read"];
+    expect(readiness()).toEqual(failingSnapshot(["worker-timeout:sqlite_read"]));
+
+    stalled = [];
+    expect(readiness()).toEqual(readySnapshot());
+  });
+
   it("reports plugin replacement recovery immediately and resumes channel readiness after settlement", () => {
     let pluginReload: GatewayPluginReloadStatus | undefined;
     const { manager, readiness } = setup(

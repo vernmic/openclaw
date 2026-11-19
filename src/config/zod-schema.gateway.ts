@@ -467,6 +467,15 @@ export const GatewayConfigSchema = z
         mode: z.union([z.literal("off"), z.literal("hybrid")]).optional(),
       })
       .optional(),
+    readiness: z
+      .strictObject({
+        /**
+         * Report the Gateway unready while a worker pool keeps hitting task deadlines
+         * (three timeouts within five minutes). Liveness is unchanged. Default: false.
+         */
+        failOnWorkerTimeouts: z.boolean().optional(),
+      })
+      .optional(),
     tls: z
       .object({
         enabled: z.boolean().optional(),

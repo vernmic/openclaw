@@ -50,6 +50,8 @@ export type WorkerTaskHost = {
   captureWorkerStartObserver?(url: URL): (() => void) | undefined;
   workerStarted(worker: WorkerLifecycle, pool: object): void;
   workerRetiring(worker: WorkerLifecycle, reason: WorkerRetirementReason): void;
+  /** A task reached its deadline; caller aborts and worker failures are not reported here. */
+  workerTaskTimedOut?(url: URL): void;
   /** Join host effects accepted by this worker before releasing its execution capacity. */
   workerStopped?(worker: WorkerLifecycle): void | Promise<void>;
   /** Best-effort telemetry before native stop; the host bounds waiting, including synchronous service. */
