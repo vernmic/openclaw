@@ -18,20 +18,40 @@ export function stableStringify(
 }
 
 type StableKeyOrder = "code-unit" | "locale";
+type StableJsonOptions = { keyOrder?: StableKeyOrder };
 
 /**
  * Recursively clones a value with object keys sorted at every level (#199909), so
  * `JSON.stringify` of the result is deterministic canonical JSON: member order cannot
  * leak key insertion order, and JSON's own semantics still drop `undefined` members at
- * stringify time. Callers tweak the returned value for one-off output rules themselves
+ * stringify time. A callable `toJSON`, own or inherited, runs first with the property
+ * key (`""` at the root, then the member name or array index), and the clone continues
+ * on that result. Callers tweak the returned value for one-off output rules themselves
  * (for example dropping undefined array entries) rather than growing helper options.
+ * A cycle overflows the stack (`RangeError`); `JSON.stringify` throws `TypeError` for a
+ * circular structure. Both throw, which is enough for current callers.
  */
-export function stableJsonValue(value: unknown, options?: { keyOrder?: StableKeyOrder }): unknown {
-  if (Array.isArray(value)) {
-    return value.map((entry) => stableJsonValue(entry, options));
+export function stableJsonValue(value: unknown, options?: StableJsonOptions): unknown {
+  return stableJsonValueAt(value, options, "");
+}
+
+function stableJsonValueAt(
+  value: unknown,
+  options: StableJsonOptions | undefined,
+  key: string,
+): unknown {
+  let resolved = value;
+  if (resolved !== null && (typeof resolved === "object" || typeof resolved === "function")) {
+    const toJSON = (resolved as { toJSON?: unknown }).toJSON;
+    if (typeof toJSON === "function") {
+      resolved = Reflect.apply(toJSON, resolved, [key]) as unknown;
+    }
   }
-  if (value && typeof value === "object") {
-    const record = value as Record<string, unknown>;
+  if (Array.isArray(resolved)) {
+    return resolved.map((entry, index) => stableJsonValueAt(entry, options, String(index)));
+  }
+  if (resolved !== null && typeof resolved === "object") {
+    const record = resolved as Record<string, unknown>;
     const compare =
       options?.keyOrder === "locale"
         ? (left: string, right: string) => left.localeCompare(right)
@@ -39,10 +59,10 @@ export function stableJsonValue(value: unknown, options?: { keyOrder?: StableKey
     return Object.fromEntries(
       Object.entries(record)
         .toSorted(([left], [right]) => compare(left, right))
-        .map(([key, entry]) => [key, stableJsonValue(entry, options)]),
+        .map(([entryKey, entry]) => [entryKey, stableJsonValueAt(entry, options, entryKey)]),
     );
   }
-  return value;
+  return resolved;
 }
 
 /** Writes the same deterministic text without retaining completed container strings. */
