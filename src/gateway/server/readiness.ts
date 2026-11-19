@@ -5,6 +5,7 @@ import {
   getRecordedChildRuntimeViability,
   type ChildRuntimeViability,
 } from "../../infra/child-runtime-viability.js";
+import { noteGatewayCoreReady } from "../../infra/worker-request-diagnostics.js";
 import type { AgentDatabaseAdmissionRefusal } from "../../state/agent-database-admission.js";
 import {
   DEFAULT_CHANNEL_CONNECT_GRACE_MS,
@@ -232,6 +233,9 @@ export function createReadinessChecker(
     const agentDatabases = refusals?.filter(({ code }) => code !== "agent-deletion");
     const agentDeletions = refusals?.filter(({ code }) => code === "agent-deletion");
     const result = readReadiness(agentDatabases, childRuntime, startup ?? getStartup());
+    if (result.coreReady) {
+      noteGatewayCoreReady();
+    }
     const getEventLoopHealth = deps.getEventLoopHealth;
     const eventLoop = getEventLoopHealth?.();
     return {
