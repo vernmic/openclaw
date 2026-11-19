@@ -10,7 +10,10 @@ import { loadOrCreateProcessDeviceIdentityAsync } from "../infra/device-identity
 import { readDevicePairingNodeSnapshot } from "../infra/device-pairing-store-readonly.js";
 import type { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import { loadGatewayTlsServerRuntime } from "../infra/tls/gateway.js";
-import { listStalledWorkerRequestKinds } from "../infra/worker-request-diagnostics.js";
+import {
+  armWorkerTimeoutStallAfterCoreReady,
+  listStalledWorkerRequestKinds,
+} from "../infra/worker-request-diagnostics.js";
 import type { createSubsystemLogger } from "../logging/subsystem.js";
 import { runtimeForLogger } from "../logging/subsystem.js";
 import type { createPluginRegistryOwner } from "../plugins/runtime.js";
@@ -493,6 +496,9 @@ export async function prepareGatewayKernelState(params: {
     { ...startupCheckerDeps, gatewayBootId: bootId },
     listAgentDatabaseAdmissionRefusals,
   );
+  // Startup deadlines must not fail a restart or update probe. Counting starts
+  // at the first core-ready result, which this checker records.
+  armWorkerTimeoutStallAfterCoreReady();
   const getReadiness = createReadinessChecker({
     channelManager,
     ...startupCheckerDeps,

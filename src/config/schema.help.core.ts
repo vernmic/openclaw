@@ -152,7 +152,7 @@ export const CORE_FIELD_HELP: Record<string, string> = {
   "gateway.readiness":
     "Extra readiness signals for /readyz and the health RPC's coreReady field. Liveness (/healthz) is unaffected.",
   "gateway.readiness.failOnWorkerTimeouts":
-    "Reports the Gateway unready (failing entry worker-timeout:<kind>) while one worker pool keeps hitting task deadlines: three timeouts within five minutes, such as session storage stalling on a full disk. Clears on its own five minutes after the timeouts stop. Default: false. Changes apply without restarting the Gateway.",
+    "Reports the Gateway unready (failing entry worker-timeout:<kind>) while one worker pool keeps hitting task deadlines after the Gateway has reached core-ready once: three timeouts within five minutes, such as session storage stalling on a full disk. Deadlines before that first core-ready do not count. Clears on its own five minutes after the timeouts stop. Default: false. Changes apply without restarting the Gateway.",
   "gateway.repositoryIntegration":
     "Plugin ID required to admit worker repository source access, including native, GitHub App, and managed OAuth or PAT credentials. Missing, disabled or unloaded owners deny admission. Omit to use native repository behavior; enabling a plugin alone does not select it.",
   "gateway.auth":

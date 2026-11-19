@@ -471,7 +471,8 @@ export const GatewayConfigSchema = z
       .strictObject({
         /**
          * Report the Gateway unready while a worker pool keeps hitting task deadlines
-         * (three timeouts within five minutes). Liveness is unchanged. Default: false.
+         * after the Gateway has first reached core-ready (three timeouts within five
+         * minutes). Deadlines before that do not count. Liveness is unchanged. Default: false.
          */
         failOnWorkerTimeouts: z.boolean().optional(),
       })

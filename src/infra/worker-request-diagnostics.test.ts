@@ -1,7 +1,9 @@
 import type { EventLoopUtilization } from "node:perf_hooks";
 import { afterEach, expect, it, vi } from "vitest";
 import {
+  armWorkerTimeoutStallAfterCoreReady,
   listStalledWorkerRequestKinds,
+  noteGatewayCoreReady,
   onWorkerRequestMetrics,
   recordWorkerRequestTimeout,
   trackWorkerRequest,
@@ -85,6 +87,27 @@ it("reports a worker kind as stalled only while its last three deadlines fall wi
     expect(listStalledWorkerRequestKinds()).toContain("diskBudget");
     now += 5 * 60_000;
     expect(listStalledWorkerRequestKinds()).not.toContain("diskBudget");
+  } finally {
+    clock.mockRestore();
+  }
+});
+
+it("does not mark a stall for deadlines that expire before the gateway first reaches core-ready", () => {
+  let now = 100;
+  const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+  try {
+    armWorkerTimeoutStallAfterCoreReady();
+    recordWorkerRequestTimeout("sessionHistory");
+    recordWorkerRequestTimeout("sessionHistory");
+    recordWorkerRequestTimeout("sessionHistory");
+    expect(listStalledWorkerRequestKinds()).not.toContain("sessionHistory");
+    now = 200;
+    noteGatewayCoreReady();
+    expect(listStalledWorkerRequestKinds()).not.toContain("sessionHistory");
+    recordWorkerRequestTimeout("sessionHistory");
+    recordWorkerRequestTimeout("sessionHistory");
+    recordWorkerRequestTimeout("sessionHistory");
+    expect(listStalledWorkerRequestKinds()).toContain("sessionHistory");
   } finally {
     clock.mockRestore();
   }
