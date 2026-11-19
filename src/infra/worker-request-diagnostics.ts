@@ -97,6 +97,24 @@ const recentTimeouts = resolveGlobalSingleton(
   () => new Map<WorkerRequestKind, number[]>(),
 );
 
+/** When armed, deadlines before the first core-ready instant do not count. */
+const stallAfterCoreReady = resolveGlobalSingleton(
+  Symbol.for("openclaw.workerRequestStallAfterCoreReady"),
+  () => ({ armed: false, coreReadyAt: undefined as number | undefined }),
+);
+
+/** Gateway startup opts in. Other processes keep counting deadlines immediately. */
+export function armWorkerTimeoutStallAfterCoreReady(): void {
+  stallAfterCoreReady.armed = true;
+}
+
+/** First core-ready instant. Later calls keep that instant. */
+export function noteGatewayCoreReady(): void {
+  if (stallAfterCoreReady.coreReadyAt === undefined) {
+    stallAfterCoreReady.coreReadyAt = performance.now();
+  }
+}
+
 export function recordWorkerRequestTimeout(kind: WorkerRequestKind): void {
   const times = recentTimeouts.get(kind) ?? [];
   times.push(performance.now());
@@ -108,10 +126,18 @@ export function recordWorkerRequestTimeout(kind: WorkerRequestKind): void {
 
 /** Worker kinds whose last few tasks all reached their deadline within the stall window. */
 export function listStalledWorkerRequestKinds(): WorkerRequestKind[] {
+  const gate = stallAfterCoreReady;
+  if (gate.armed && gate.coreReadyAt === undefined) {
+    return [];
+  }
+  const floor = gate.armed ? gate.coreReadyAt : undefined;
   const now = performance.now();
-  return [...recentTimeouts].flatMap(([kind, times]) =>
-    times.length === STALL_TIMEOUT_COUNT && now - times[0]! < STALL_WINDOW_MS ? [kind] : [],
-  );
+  return [...recentTimeouts].flatMap(([kind, times]) => {
+    const counted = floor === undefined ? times : times.filter((time) => time >= floor);
+    return counted.length === STALL_TIMEOUT_COUNT && now - counted[0]! < STALL_WINDOW_MS
+      ? [kind]
+      : [];
+  });
 }
 
 const detailedTiming = isDiagnosticFlagEnabled("sqlite.worker-timing");
