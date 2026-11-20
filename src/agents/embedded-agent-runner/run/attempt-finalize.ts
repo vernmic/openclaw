@@ -268,8 +268,10 @@ export async function completeEmbeddedAttemptAfterTurn(
             // Stamp agent_end only when finalize records this attempt. Its gate
             // already dropped prompt errors, aborts, yield aborts, and turns
             // without an admission plus a terminal anchor. A degraded lease runs
-            // the legacy engine, so that attempt gets no field.
+            // the legacy engine, so that attempt gets no field. Record first so a
+            // throw leaves the field unset.
             record: (facts) => {
+              recordContextEngineTurnCandidate(facts);
               if (supportsContextEngineDurableTurnAdvancement(activeContextEngine)) {
                 const ownerPluginId = resolveActiveContextEnginePluginId();
                 contextEngineTurn = {
@@ -277,7 +279,6 @@ export async function completeEmbeddedAttemptAfterTurn(
                   ...(ownerPluginId ? { enginePluginId: ownerPluginId } : {}),
                 };
               }
-              recordContextEngineTurnCandidate(facts);
             },
           }
         : undefined,
