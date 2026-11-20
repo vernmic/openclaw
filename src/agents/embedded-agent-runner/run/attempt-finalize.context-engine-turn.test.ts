@@ -1,53 +1,37 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  discardIntent: vi.fn(),
-  finalizeHarnessContextEngineTurn: vi.fn(async () => undefined),
-  markActiveEmbeddedRunAbandoned: vi.fn(),
-  readActiveTranscriptEntryAnchor: vi.fn(),
-  readNewestActiveMessageTranscriptEntryAnchor: vi.fn(),
-  resolveTerminalMessageEntryId: vi.fn(),
+  readActiveTranscriptEntryAnchorAsync: vi.fn(),
   runAgentEndSideEffects: vi.fn(async () => undefined),
+  waitForSessionTranscriptProjection: vi.fn(async () => undefined),
   warn: vi.fn(),
 }));
 
-vi.mock("../../../config/sessions/session-accessor.js", () => ({
-  readActiveTranscriptEntryAnchor: mocks.readActiveTranscriptEntryAnchor,
-  readNewestActiveMessageTranscriptEntryAnchor: mocks.readNewestActiveMessageTranscriptEntryAnchor,
-}));
-vi.mock("../../../context-engine/registry.js", () => ({
-  resolveContextEngineRegisteredId: (engine: unknown) =>
-    engine ? "hindsight-openclaw" : undefined,
-}));
-vi.mock("../../agent-run-terminal-outcome.js", () => ({
-  projectAgentRunAttemptTerminal: vi.fn(() => ({
-    aborted: false,
-    timedOutDuringCompaction: false,
-  })),
-  mergeAgentRunAttemptTerminal: vi.fn((terminal) => terminal),
-}));
+vi.mock("../../../config/sessions/session-transcript-anchor-read.js", async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return {
+    ...actual,
+    readActiveTranscriptEntryAnchorAsync: mocks.readActiveTranscriptEntryAnchorAsync,
+  };
+});
+vi.mock("../../../config/sessions/session-transcript-reconcile.js", async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return {
+    ...actual,
+    waitForSessionTranscriptProjection: mocks.waitForSessionTranscriptProjection,
+  };
+});
 vi.mock("../../harness/agent-end-side-effects.js", () => ({
   runAgentEndSideEffects: mocks.runAgentEndSideEffects,
   runAgentEndSideEffectsAsync: mocks.runAgentEndSideEffects,
-}));
-vi.mock("../../harness/context-engine-lifecycle.js", () => ({
-  finalizeHarnessContextEngineTurn: mocks.finalizeHarnessContextEngineTurn,
-}));
-vi.mock("../../harness/context-engine-turn-outbox-store.js", () => ({
-  openContextEngineTurnOutboxWorkerStore: vi.fn(() => ({
-    discardIntent: mocks.discardIntent,
-  })),
 }));
 vi.mock("./agent-end-context.js", () => ({
   buildEmbeddedAgentEndContext: () => ({}),
   buildEmbeddedForegroundPromptContext: () => ({}),
 }));
-vi.mock("./attempt-terminal-anchor.js", () => ({
-  resolveTerminalMessageEntryId: mocks.resolveTerminalMessageEntryId,
-}));
 vi.mock("../logger.js", () => ({ log: { debug: vi.fn(), error: vi.fn(), warn: mocks.warn } }));
 vi.mock("../runs.js", () => ({
-  markActiveEmbeddedRunAbandoned: mocks.markActiveEmbeddedRunAbandoned,
+  markActiveEmbeddedRunAbandoned: vi.fn(),
 }));
 
 import { sessionManagerReadMessageAnchor } from "../../sessions/session-manager-message-anchor.js";
@@ -67,12 +51,27 @@ const admission = {
   idempotencyKey: "turn:user",
   logicalTurnId: "logical-turn-1",
   role: "user",
-} as never;
+};
+
+const terminalAnchor = {
+  agentId: "main",
+  sessionId: "session-1",
+  sessionKey: "agent:main:main",
+  storePath: "store.sqlite",
+  generation: "gen-terminal",
+  entryId: "terminal-entry-1",
+  rawSeq: 12,
+  effectiveParentId: "entry-1",
+  activeMessagePosition: 5,
+};
+
+const terminalEntryId = "terminal-entry-1";
 
 function makeDurableEngine() {
   return {
     info: {
-      id: "hindsight-openclaw",
+      id: "fixture-context-engine",
+      name: "Fixture Context Engine",
       transcriptSemantics: {
         currentTurnFence: "before-current-turn-entry-v1",
         turnAdvancementIdempotency: "atomic-idempotent-v1",
@@ -82,26 +81,42 @@ function makeDurableEngine() {
   } as never;
 }
 
-function makeInput(engine: unknown, pluginId: string | undefined) {
-  return {
+function makeLegacyEngine() {
+  return { info: { id: "legacy", name: "Legacy" } } as never;
+}
+
+function makeInput(options?: {
+  engine?: unknown;
+  pluginId?: string;
+  terminal?: { kind: "ok" } | { kind: "aborted"; source: "runtime" };
+  admission?: typeof admission;
+  degradedReason?: string;
+}) {
+  const onContextEngineTurnCandidate = vi.fn();
+  const receipt = options && "admission" in options ? options.admission : admission;
+  const input = {
     runAbortController: new AbortController(),
     attempt: {
-      onContextEngineTurnCandidate: vi.fn(),
-      userTurnTranscriptRecorder: { getAdmissionReceipt: () => admission },
+      onContextEngineTurnCandidate,
+      userTurnTranscriptRecorder: {
+        getAdmissionReceipt: () => receipt,
+      },
       sessionKey: "agent:main:main",
       sessionTarget: "current",
       runId: "run-1",
       sessionId: "session-1",
-      provider: "zai",
-      modelId: "glm-5.3",
+      provider: "fixture-provider",
+      modelId: "fixture-model",
       model: { contextWindow: 200000 },
       bootstrapContextRunKind: "chat",
       config: {},
+      contextTokenBudget: 180000,
+      ...(options?.degradedReason ? { degradedReason: options.degradedReason } : {}),
     },
-    activeContextEngine: engine,
+    activeContextEngine: options?.engine ?? makeDurableEngine(),
     agentDir: "agent-dir",
-    resolveActiveContextEnginePluginId: () => pluginId,
-    state: { terminal: { kind: "ok" } },
+    resolveActiveContextEnginePluginId: () => options?.pluginId,
+    state: { terminal: options?.terminal ?? { kind: "ok" } },
     sessionLock: { withOwnedTranscriptWrite: (run: () => unknown) => run() },
     setup: { effectiveWorkspace: "workspace", sessionAgentId: "main" },
     prepared: {
@@ -110,11 +125,14 @@ function makeInput(engine: unknown, pluginId: string | undefined) {
         agentSession: { hookRunner: {} },
         contextGuards: { getAfterTurnCheckpoint: () => undefined },
         sessionManager: {
-          getEntry: () => undefined,
+          getEntry: (id: string) =>
+            id === terminalEntryId
+              ? { id: terminalEntryId, type: "message", parentId: null }
+              : undefined,
           getLeafEntry: () => undefined,
-          [sessionManagerReadMessageAnchor]: () => undefined,
-          getLeafId: () => undefined,
+          getLeafId: () => terminalEntryId,
           getSessionTarget: () => undefined,
+          [sessionManagerReadMessageAnchor]: () => undefined,
         },
         state: { prePromptMessageCount: 0 },
       },
@@ -124,61 +142,147 @@ function makeInput(engine: unknown, pluginId: string | undefined) {
     },
     diagnostics: { diagnosticTrace: {} },
   } as never;
+  return { input, onContextEngineTurnCandidate };
 }
 
-const settled = {
-  sessionIdUsed: "session-1",
-  promptError: false,
-  messagesSnapshot: [],
-  lastCallUsage: undefined,
-  promptCache: undefined,
-  compactionOccurredThisAttempt: false,
-} as never;
+function settled(overrides?: { promptError?: unknown }) {
+  return {
+    sessionIdUsed: "session-1",
+    promptError: overrides?.promptError,
+    messagesSnapshot: [],
+    lastCallUsage: undefined,
+    promptCache: undefined,
+    compactionOccurredThisAttempt: false,
+  } as never;
+}
 
-const prompt = {
-  yieldAborted: false,
-  transcriptLeafId: "leaf-1",
-  promptStartedAt: Date.now(),
-} as never;
+function prompt(overrides?: { yieldAborted?: boolean }) {
+  return {
+    yieldAborted: overrides?.yieldAborted ?? false,
+    transcriptLeafId: "leaf-1",
+    promptStartedAt: Date.now(),
+  } as never;
+}
+
+function contextEngineTurnAt(index: number) {
+  const call = mocks.runAgentEndSideEffects.mock.calls[index]?.[0] as
+    | {
+        ctx?: { contextEngineTurn?: { logicalTurnId: string; enginePluginId?: string } };
+      }
+    | undefined;
+  return call?.ctx?.contextEngineTurn;
+}
 
 describe("completeEmbeddedAttemptAfterTurn durable context-engine turn", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.resolveTerminalMessageEntryId.mockReturnValue("leaf-1");
+    mocks.readActiveTranscriptEntryAnchorAsync.mockResolvedValue(terminalAnchor);
+    mocks.waitForSessionTranscriptProjection.mockResolvedValue(undefined);
   });
 
-  it("announces contextEngineTurn with the owner plugin id from the active engine", async () => {
-    mocks.readActiveTranscriptEntryAnchor.mockReturnValue({ rawSeq: 12 });
-    await completeEmbeddedAttemptAfterTurn(
-      makeInput(makeDurableEngine(), "hindsight-openclaw"),
-      settled,
-      prompt,
-    );
-    const call = mocks.runAgentEndSideEffects.mock.calls.at(-1)?.[0] as {
-      ctx?: { contextEngineTurn?: { logicalTurnId: string; enginePluginId?: string } };
-    };
-    expect(call?.ctx?.contextEngineTurn).toEqual({
-      logicalTurnId: "logical-turn-1",
-      enginePluginId: "hindsight-openclaw",
+  it("announces the recorded candidate, including the plugin id for a plugin engine", async () => {
+    const { input, onContextEngineTurnCandidate } = makeInput({
+      pluginId: "fixture-engine-plugin",
     });
+    await completeEmbeddedAttemptAfterTurn(input, settled(), prompt());
+    expect(contextEngineTurnAt(0)).toEqual({
+      logicalTurnId: "logical-turn-1",
+      enginePluginId: "fixture-engine-plugin",
+    });
+    expect(onContextEngineTurnCandidate).toHaveBeenCalledOnce();
   });
 
-  it("omits contextEngineTurn when the engine does not support durable advancement", async () => {
-    mocks.readActiveTranscriptEntryAnchor.mockReturnValue({ rawSeq: 12 });
-    const engineWithoutCommit = {
-      info: {
-        id: "hindsight-openclaw",
-        transcriptSemantics: makeDurableEngine().info.transcriptSemantics,
-      },
-    };
+  it("announces logicalTurnId without enginePluginId when the engine has no plugin owner", async () => {
+    const { input } = makeInput();
+    await completeEmbeddedAttemptAfterTurn(input, settled(), prompt());
+    expect(contextEngineTurnAt(0)).toEqual({ logicalTurnId: "logical-turn-1" });
+  });
+
+  it.each([
+    {
+      label: "prompt error",
+      promptError: new Error("prompt failed") as Error | undefined,
+      terminal: undefined as { kind: "aborted"; source: "runtime" } | undefined,
+      yieldAborted: false,
+      missingAnchor: false,
+      missingAdmission: false,
+    },
+    {
+      label: "abort",
+      promptError: undefined,
+      terminal: { kind: "aborted" as const, source: "runtime" as const },
+      yieldAborted: false,
+      missingAnchor: false,
+      missingAdmission: false,
+    },
+    {
+      label: "yield abort",
+      promptError: undefined,
+      terminal: undefined,
+      yieldAborted: true,
+      missingAnchor: false,
+      missingAdmission: false,
+    },
+    {
+      label: "missing terminal anchor",
+      promptError: undefined,
+      terminal: undefined,
+      yieldAborted: false,
+      missingAnchor: true,
+      missingAdmission: false,
+    },
+    {
+      label: "missing admission",
+      promptError: undefined,
+      terminal: undefined,
+      yieldAborted: false,
+      missingAnchor: false,
+      missingAdmission: true,
+    },
+  ])("omits contextEngineTurn on $label", async (scenario) => {
+    if (scenario.missingAnchor) {
+      mocks.readActiveTranscriptEntryAnchorAsync.mockResolvedValueOnce(undefined);
+    }
+    const { input, onContextEngineTurnCandidate } = makeInput({
+      pluginId: "fixture-engine-plugin",
+      terminal: scenario.terminal,
+      admission: scenario.missingAdmission ? undefined : admission,
+    });
     await completeEmbeddedAttemptAfterTurn(
-      makeInput(engineWithoutCommit, "hindsight-openclaw"),
-      settled,
-      prompt,
+      input,
+      settled(scenario.promptError ? { promptError: scenario.promptError } : undefined),
+      prompt(scenario.yieldAborted ? { yieldAborted: true } : undefined),
     );
-    const call = mocks.runAgentEndSideEffects.mock.calls.at(-1)?.[0] as {
-      ctx?: { contextEngineTurn?: unknown };
-    };
-    expect(call?.ctx?.contextEngineTurn).toBeUndefined();
+    expect(contextEngineTurnAt(0)).toBeUndefined();
+    expect(onContextEngineTurnCandidate).not.toHaveBeenCalled();
+  });
+
+  it("omits contextEngineTurn for a degraded lease running the legacy engine", async () => {
+    const { input, onContextEngineTurnCandidate } = makeInput({
+      engine: makeLegacyEngine(),
+      pluginId: "fixture-engine-plugin",
+      degradedReason: "pending durable advancement could not be checked",
+    });
+    await completeEmbeddedAttemptAfterTurn(input, settled(), prompt());
+    expect(contextEngineTurnAt(0)).toBeUndefined();
+    expect(onContextEngineTurnCandidate).toHaveBeenCalledOnce();
+  });
+
+  it("gives the field only to the attempt that reaches the candidate after a failed attempt", async () => {
+    const { input, onContextEngineTurnCandidate } = makeInput({
+      pluginId: "fixture-engine-plugin",
+    });
+    await completeEmbeddedAttemptAfterTurn(
+      input,
+      settled({ promptError: new Error("prompt failed") }),
+      prompt(),
+    );
+    await completeEmbeddedAttemptAfterTurn(input, settled(), prompt());
+    expect(contextEngineTurnAt(0)).toBeUndefined();
+    expect(contextEngineTurnAt(1)).toEqual({
+      logicalTurnId: "logical-turn-1",
+      enginePluginId: "fixture-engine-plugin",
+    });
+    expect(onContextEngineTurnCandidate).toHaveBeenCalledOnce();
   });
 });
