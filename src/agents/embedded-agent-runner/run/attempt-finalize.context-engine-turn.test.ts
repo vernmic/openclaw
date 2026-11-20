@@ -285,4 +285,16 @@ describe("completeEmbeddedAttemptAfterTurn durable context-engine turn", () => {
     });
     expect(onContextEngineTurnCandidate).toHaveBeenCalledOnce();
   });
+
+  it("omits contextEngineTurn when the record callback throws", async () => {
+    const { input, onContextEngineTurnCandidate } = makeInput({
+      pluginId: "fixture-engine-plugin",
+    });
+    onContextEngineTurnCandidate.mockImplementation(() => {
+      throw new Error("record failed");
+    });
+    await completeEmbeddedAttemptAfterTurn(input, settled(), prompt()).catch(() => undefined);
+    expect(onContextEngineTurnCandidate).toHaveBeenCalledOnce();
+    expect(contextEngineTurnAt(0)).toBeUndefined();
+  });
 });
