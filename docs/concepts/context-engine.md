@@ -454,9 +454,15 @@ admission receipt and a terminal transcript anchor. The value is
 engine. Failed, aborted, and yield-aborted attempts, and degraded leases, carry no
 field, so fallback capture in `agent_end` stays responsible for them. When a run
 retries after a failed attempt, only the attempt that reaches the candidate gets
-the field. The field means candidate, not completed retention: it assigns capture
-responsibility and does not claim that `commitTurn` finished. After acceptance,
-the outbox recovers unpublished turns. Native Codex and generic CLI hosts do not
+the field. The field means candidate, not acceptance: a candidate can still be
+declined by the outer runner (for example an error, timeout, yielded result or
+exhausted fallback), and its unaccepted intent is then discarded without calling
+`commitTurn`. The field therefore does not by itself move capture responsibility.
+It gives a plugin that owns both paths the identity to reconcile them: record the
+`agent_end` capture under `logicalTurnId`, let `commitTurn` for the same
+`logicalTurnId` supersede it, and deliver the capture when no commit for that id
+arrives. After acceptance, the outbox recovers unpublished turns, so a commit can
+arrive after a later run starts. Native Codex and generic CLI hosts do not
 advertise this handoff. It is separate from `ownsCompaction` and does not require
 another capability-negotiation API.
 
