@@ -61,6 +61,11 @@ export type PluginHookAgentContext = PluginHookContextWindow & {
    * Pass it as `through` to `api.runtime.subagent.runForkedTurn` to fork the finished turn.
    */
   completedTurn?: { sessionId: string; entryId: string };
+  /**
+   * Set on `agent_end` only when this attempt is the host's durable-advancement
+   * candidate, not completed retention. Absent for prompt errors, aborts, yield
+   * aborts, and degraded leases that ran the legacy engine.
+   */
   contextEngineTurn?: { logicalTurnId: string; enginePluginId?: string };
   channelId?: string;
   /** Typed origin of the turn's user-role input when supplied by the producer. */

@@ -220,24 +220,10 @@ export async function completeEmbeddedAttemptAfterTurn(
   // Context-engine hooks may call runtime LLM capabilities. Only the transcript
   // rewrite callback reacquires the synchronous session write boundary.
   if (activeContextEngine && !beforeAgentFinalizeRevisionReason) {
-    // The attempt engine is the lease's effective engine; a degraded lease hands the attempt
-    // the legacy fallback, which is not durable.
-    if (
-      attempt.onContextEngineTurnCandidate &&
-      supportsContextEngineDurableTurnAdvancement(activeContextEngine)
-    ) {
-      const receipt = attempt.userTurnTranscriptRecorder?.getAdmissionReceipt();
-      if (receipt) {
-        const ownerPluginId = resolveActiveContextEnginePluginId();
-        contextEngineTurn = {
-          logicalTurnId: receipt.logicalTurnId,
-          ...(ownerPluginId ? { enginePluginId: ownerPluginId } : {}),
-        };
-      }
-    }
+    const recordContextEngineTurnCandidate = attempt.onContextEngineTurnCandidate;
     const lifecycleState = projectAgentRunAttemptTerminal(executionState.terminal);
     let terminalEntryId: string | null | undefined;
-    if (attempt.onContextEngineTurnCandidate) {
+    if (recordContextEngineTurnCandidate) {
       // Cache-TTL bookkeeping advances the leaf without adding a message anchor.
       // Other entry kinds retain their terminal semantics.
       terminalEntryId = null;
@@ -271,7 +257,7 @@ export async function completeEmbeddedAttemptAfterTurn(
       messagesSnapshot,
       prePromptMessageCount: contextEngineAfterTurnCheckpoint ?? prePromptMessageCount,
       tokenBudget: attempt.contextTokenBudget,
-      turnCandidate: attempt.onContextEngineTurnCandidate
+      turnCandidate: recordContextEngineTurnCandidate
         ? {
             admission: attempt.userTurnTranscriptRecorder?.getAdmissionReceipt(),
             terminalEntryId,
@@ -279,10 +265,23 @@ export async function completeEmbeddedAttemptAfterTurn(
               sessionManager,
               terminalEntryId,
             ),
-            record: attempt.onContextEngineTurnCandidate,
+            // Stamp agent_end only when finalize records this attempt. Its gate
+            // already dropped prompt errors, aborts, yield aborts, and turns
+            // without an admission plus a terminal anchor. A degraded lease runs
+            // the legacy engine, so that attempt gets no field.
+            record: (facts) => {
+              if (supportsContextEngineDurableTurnAdvancement(activeContextEngine)) {
+                const ownerPluginId = resolveActiveContextEnginePluginId();
+                contextEngineTurn = {
+                  logicalTurnId: facts.boundary.admission.logicalTurnId,
+                  ...(ownerPluginId ? { enginePluginId: ownerPluginId } : {}),
+                };
+              }
+              recordContextEngineTurnCandidate(facts);
+            },
           }
         : undefined,
-      runtimeContext: attempt.onContextEngineTurnCandidate
+      runtimeContext: recordContextEngineTurnCandidate
         ? undefined
         : buildAfterTurnRuntimeContextFromUsage({
             attempt,

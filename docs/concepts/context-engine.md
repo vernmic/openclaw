@@ -445,12 +445,18 @@ require the capability are rejected before the CLI process starts.
 
 Engines that coordinate durable turn capture with an `agent_end` hook can require
 `agent-end-context-engine-turn-v1` for `agent-run`. The OpenClaw embedded runner
-provides this capability: eligible engine-owned attempts carry
-`ctx.contextEngineTurn.logicalTurnId` and, for plugin-owned engines,
-`ctx.contextEngineTurn.enginePluginId`. The hook can leave capture of those
-attempts to the engine's durable `commitTurn` path while preserving its fallback
-for unowned attempts. The identity assigns capture responsibility; it does not
-claim that retention has completed. Native Codex and generic CLI hosts do not
+provides this capability. `ctx.contextEngineTurn` is present on `agent_end` exactly
+when that attempt is the host's durable-advancement candidate: the attempt is not a
+prompt error, abort, or yield abort; its engine supports durable advancement (a
+degraded lease runs the legacy engine, so the field is absent); and the turn has an
+admission receipt and a terminal transcript anchor. The value is
+`{ logicalTurnId, enginePluginId? }`, with `enginePluginId` set for a plugin-owned
+engine. Failed, aborted, and yield-aborted attempts, and degraded leases, carry no
+field, so fallback capture in `agent_end` stays responsible for them. When a run
+retries after a failed attempt, only the attempt that reaches the candidate gets
+the field. The field means candidate, not completed retention: it assigns capture
+responsibility and does not claim that `commitTurn` finished. After acceptance,
+the outbox recovers unpublished turns. Native Codex and generic CLI hosts do not
 advertise this handoff. It is separate from `ownsCompaction` and does not require
 another capability-negotiation API.
 
