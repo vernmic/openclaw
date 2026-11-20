@@ -14,6 +14,9 @@ const ZAI_PLAN_QUOTA_CODE_RE = /["']code["']\s*:\s*["']?1308\b/;
 /**
  * Exact plan-quota tokens after trim, lowercasing, and hyphen-to-underscore.
  * A longer string that only contains one of these is not a match, including details.
+ * Z.AI abnormal termination during streaming (SSE) returns no business code (the
+ * reason is in `finish_reason`), so a stream that dies on quota is not matched here.
+ * https://docs.z.ai/api-reference/api-code
  */
 const QUOTA_EXHAUSTION_TOKENS: ReadonlySet<string> = new Set([
   // Z.AI plan windows (HTTP 429). 1302 is the short request rate limit and stays out,
@@ -30,6 +33,9 @@ const QUOTA_EXHAUSTION_TOKENS: ReadonlySet<string> = new Set([
   "1319",
   "1320",
   "1321",
+  // Z.AI insufficient balance or no resource package (HTTP 429). Waiting does not clear it.
+  // https://docs.z.ai/api-reference/api-code
+  "1113",
   // OpenAI billing type. The four codes are the causes retrying will not clear.
   // https://developers.openai.com/api/docs/guides/error-codes
   "insufficient_quota",
