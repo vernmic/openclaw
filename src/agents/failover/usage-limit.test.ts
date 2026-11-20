@@ -16,6 +16,14 @@ describe("classifyProviderUsageLimit", () => {
     expect(classifyProviderUsageLimit({ message: '{"error":{"code":"1308"}}' })).toBe("quota");
   });
 
+  it("classifies Z.AI code 1113 as quota and leaves fair-use 1313 as a rate limit", () => {
+    expect(classifyProviderUsageLimit({ status: 429, code: "1113", message: "" })).toBe("quota");
+    expect(classifyProviderUsageLimit({ message: '{"error":{"code":"1113"}}' })).toBe("quota");
+    expect(classifyProviderUsageLimit({ status: 429, code: "1313", message: "" })).toBe(
+      "rate_limit",
+    );
+  });
+
   it("classifies a quota code or insufficient_quota type as quota", () => {
     expect(classifyProviderUsageLimit({ status: 429, code: "insufficient_quota" })).toBe("quota");
     expect(classifyProviderUsageLimit({ status: 429, errorType: "insufficient_quota" })).toBe(
